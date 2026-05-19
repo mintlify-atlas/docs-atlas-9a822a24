@@ -1,0 +1,169 @@
+---
+title: "Augment queries with Textual Query Augmentation"
+description: "Use Textual Query Augmentation to rewrite natural-language questions and evidence strings with decreased naturalness, driven by a schema renaming map."
+---
+
+Textual Query Augmentation (TQA) rewrites the natural-language questions and evidence strings in a Text-to-SQL dataset to be deliberately less natural — replacing intuitive table and column names with obfuscated ones according to a schema-renaming map. The rewriting is performed by GPT-4o via a few-shot prompt, and the pipeline supports incremental processing so that interrupted runs can resume from where they left off.
+
+## Prerequisites
+
+- An `OPENAI_API_KEY` environment variable available in your shell.
+- A schema mapping CSV that defines the renaming for each database.
+- A queries CSV in the BIRD format (columns: `question_id`, `db_id`, `question`, `evidence`, `SQL`).
+
+## Full workflow
+
+<Steps>
+  <Step title="Prepare the schema mapping CSV">
+    Create or obtain a CSV file that maps original table and column names to their obfuscated replacements. Each row represents one column mapping. The required columns are:
+
+    | Column | Description |
+    |---|---|
+    | `db_id` | Database identifier (e.g. `california_schools`) |
+    | `table_name` | Original table name |
+    | `new_table_name` | Replacement table name |
+    | `column_name` | Original column name |
+    | `new_column_name` | Replacement column name |
+
+    The default mapping file used in experiments lives at:
+
+    ```
+    data/augmentation/decrease_naturalness/databases_naturalness_decreased_fixed.csv
+    ```
+  </Step>
+
+  <Step title="Prepare the queries CSV">
+    The input queries file must contain the following columns:
+
+    | Column | Description |
+    |---|---|
+    | `question_id` | Unique question identifier |
+    | `db_id` | Database identifier |
+    | `question` | Original natural-language question |
+    | `evidence` | Evidence string accompanying the question |
+    | `SQL` | Ground-truth SQL query |
+
+    The pipeline internally renames `question` → `original_question` and `evidence` → `original_evidence` before processing.
+  </Step>
+
+  <Step title="Set your OpenAI API key">
+    TQA calls GPT-4o for each query rewrite. Export your key before running:
+
+    ```bash
+    export OPENAI_API_KEY="your_api_key_here"
+    ```
+
+    <Warning>
+      Processing large query sets incurs OpenAI API costs. The incremental-processing feature (see note below) lets you pause and resume without reprocessing completed entries.
+    </Warning>
+  </Step>
+
+  <Step title="Call process_nl_queries()">
+    Import and call the main processing function from your Python script or notebook:
+
+    ```python
+    from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+        process_nl_queries,
+        print_nl_processing_summary,
+    )
+    from src.core.model_manager import OpenAIModel
+
+    stats = process_nl_queries(
+        queries_csv_path="data/augmentation/decrease_naturalness/experiment_dev_sql_failed/new_sql_queries.csv",
+        mapping_csv_path="data/augmentation/decrease_naturalness/databases_naturalness_decreased_fixed.csv",
+        output_csv_path="data/augmentation/decrease_naturalness/experiments_dev/new_sql_nl_queries.csv",
+        model_name=OpenAIModel.GPT_4O,
+        seed=42,
+        temperature=0,
+    )
+
+    print_nl_processing_summary(stats)
+    ```
+
+    The function reads the schema mappings, loads the queries, skips any entries already present in the output file, and writes each newly processed row immediately to disk as it completes.
+  </Step>
+</Steps>
+
+## API reference
+
+### `process_nl_queries()`
+
+The primary entry point for batch augmentation.
+
+<ParamField path="queries_csv_path" type="string" required>
+  Path to the input CSV containing the queries to augment.
+</ParamField>
+
+<ParamField path="mapping_csv_path" type="string" required>
+  Path to the schema mapping CSV that defines table and column renames.
+</ParamField>
+
+<ParamField path="output_csv_path" type="string" required>
+  Path where the augmented output CSV will be written. If the file already exists, entries already present in it are skipped (incremental processing).
+</ParamField>
+
+<ParamField path="model_name" type="OpenAIModel" default="OpenAIModel.GPT_4O">
+  The OpenAI model to use for rewriting. Accepts any member of the `OpenAIModel` enum, such as `OpenAIModel.GPT_4O`.
+</ParamField>
+
+<ParamField path="seed" type="integer" default="42">
+  Random seed passed to the OpenAI API for reproducible generation.
+</ParamField>
+
+<ParamField path="temperature" type="number" default="0">
+  Sampling temperature passed to the OpenAI API. Use `0` for fully deterministic output.
+</ParamField>
+
+### `generate_less_natural_nl()`
+
+For single-item generation, call this function directly:
+
+```python
+from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+    generate_less_natural_nl,
+)
+from src.core.model_manager import OpenAIModel
+
+new_question, new_evidence = generate_less_natural_nl(
+    question="Which schools have the highest SAT scores?",
+    evidence="SAT score refers to NumGE1500",
+    schema_mapping=db_schema_mapping,   # dict from read_schema_mapping()
+    model_name=OpenAIModel.GPT_4O,
+    seed=42,
+    temperature=0,
+)
+```
+
+This is the function that `process_nl_queries()` calls internally for each row.
+
+### `print_nl_processing_summary()`
+
+Prints a formatted summary of a completed run to stdout, including total, skipped, successful, and failed counts broken down per database.
+
+```python
+print_nl_processing_summary(stats)
+```
+
+The `stats` dict is the return value of `process_nl_queries()`.
+
+## Output CSV structure
+
+The output CSV written to `output_csv_path` contains the following columns (plus any extra columns carried through from the input):
+
+| Column | Description |
+|---|---|
+| `question_id` | Original question identifier |
+| `db_id` | Database identifier |
+| `original_question` | Unmodified natural-language question |
+| `original_evidence` | Unmodified evidence string |
+| `new_question` | Rewritten question with decreased naturalness |
+| `new_evidence` | Rewritten evidence with obfuscated schema names |
+| `SQL` | Unchanged ground-truth SQL |
+
+<Note>
+  TQA supports incremental processing. If `output_csv_path` already exists from a previous run, `process_nl_queries()` reads it on startup and skips any `(db_id, question_id)` pair already present. You can safely interrupt and restart the pipeline without reprocessing completed entries.
+</Note>
+
+<Tip>
+  If no schema mapping is found for a particular `db_id`, the pipeline keeps the original question and evidence unchanged and logs a warning. This means a partial schema mapping file will still produce valid (though unaugmented) output for unmapped databases.
+</Tip>

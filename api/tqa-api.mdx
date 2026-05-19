@@ -1,0 +1,292 @@
+---
+title: "Textual Query Augmentation API reference"
+description: "Python API reference for process_nl_queries, generate_less_natural_nl, read_schema_mapping, and the CSV schemas used by the TQA pipeline."
+---
+
+The Textual Query Augmentation (TQA) module decreases the naturalness of BIRD benchmark questions and evidence strings by replacing human-readable table and column names with obfuscated schema identifiers. It calls an LLM (default: GPT-4o) with a few-shot prompt that instructs the model to rewrite the question and evidence to match a provided schema mapping, then streams results row-by-row into an output CSV so progress is never lost between runs. The module supports resuming interrupted jobs: any `(db_id, question_id)` pair already present in the output CSV is skipped automatically.
+
+## `process_nl_queries()`
+
+The main entry point. Reads the input queries and schema mapping, calls `generate_less_natural_nl()` for each unprocessed row, and writes results incrementally to `output_csv_path`.
+
+```python
+from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+    process_nl_queries,
+    print_nl_processing_summary,
+)
+from src.core.model_manager.openai_model import OpenAIModel
+
+stats = process_nl_queries(
+    queries_csv_path="data/augmentation/decrease_naturalness/new_sql_queries.csv",
+    mapping_csv_path="data/augmentation/decrease_naturalness/databases_naturalness_decreased_fixed.csv",
+    output_csv_path="data/augmentation/decrease_naturalness/experiments_dev/new_sql_nl_queries.csv",
+    model_name=OpenAIModel.GPT_4O,
+    seed=42,
+    temperature=0,
+)
+
+print_nl_processing_summary(stats)
+```
+
+**Parameters**
+
+<ParamField path="queries_csv_path" type="string" required>
+  Path to the input CSV file containing the queries to augment. Must have at minimum the columns `question_id`, `db_id`, `question`, and `evidence`. The function renames `question` → `original_question` and `evidence` → `original_evidence` internally before processing.
+</ParamField>
+
+<ParamField path="mapping_csv_path" type="string" required>
+  Path to the schema mapping CSV that describes how table and column names should be rewritten. Must contain the columns `db_id`, `table_name`, `column_name`, `new_table_name`, and `new_column_name`.
+</ParamField>
+
+<ParamField path="output_csv_path" type="string" required>
+  Path where the augmented results are written. The function creates parent directories if they do not exist. If the file already exists, completed rows are loaded and skipped, enabling resumable runs.
+</ParamField>
+
+<ParamField path="model_name" type="OpenAIModel" default="OpenAIModel.GPT_4O">
+  The OpenAI model to use for generation. Pass any member of the `OpenAIModel` enum (e.g., `OpenAIModel.GPT_4O_MINI`) or use the default GPT-4o for highest quality output.
+</ParamField>
+
+<ParamField path="seed" type="integer" default="42">
+  Random seed forwarded to the OpenAI completion call. Use a fixed seed to obtain deterministic outputs across retries.
+</ParamField>
+
+<ParamField path="temperature" type="float" default="0">
+  Sampling temperature for the LLM. `0` produces the most deterministic output; higher values introduce more variation.
+</ParamField>
+
+**Return value**
+
+<ResponseField name="stats" type="dict">
+  Processing statistics for the entire run.
+  <Expandable title="keys">
+    <ResponseField name="total_queries" type="integer">
+      Total number of rows in the input CSV.
+    </ResponseField>
+    <ResponseField name="processed_queries" type="integer">
+      Number of rows that were sent to the LLM in this run (excludes skipped rows).
+    </ResponseField>
+    <ResponseField name="successful_queries" type="integer">
+      Rows where the generated question or evidence differed from the original (i.e., the model produced a meaningful change).
+    </ResponseField>
+    <ResponseField name="failed_queries" type="integer">
+      Rows where the LLM returned output identical to the original input.
+    </ResponseField>
+    <ResponseField name="skipped_existing" type="integer">
+      Rows skipped because they were already present in the output CSV from a previous run.
+    </ResponseField>
+    <ResponseField name="db_stats" type="dict">
+      Per-database breakdown. Keys are `db_id` strings; values are dicts with `total`, `processed`, `successful`, and `skipped` counts.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## `generate_less_natural_nl()`
+
+Generates a less natural question and evidence for a single query item. Called internally by `process_nl_queries()` but also useful for one-off transformations.
+
+```python
+from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+    generate_less_natural_nl,
+    read_schema_mapping,
+)
+from src.core.model_manager.openai_model import OpenAIModel
+
+db_mappings = read_schema_mapping("data/.../mapping.csv")
+schema_mapping = db_mappings["financial"]
+
+new_question, new_evidence = generate_less_natural_nl(
+    question="How many accounts were opened in the Prague district?",
+    evidence="Prague district refers to district_name = 'Prague'",
+    schema_mapping=schema_mapping,
+    model_name=OpenAIModel.GPT_4O,
+    seed=42,
+    temperature=0,
+)
+```
+
+<ParamField path="question" type="string" required>
+  The original natural-language question to be rewritten.
+</ParamField>
+
+<ParamField path="evidence" type="string" required>
+  The original evidence string accompanying the question.
+</ParamField>
+
+<ParamField path="schema_mapping" type="dict" required>
+  The schema mapping for the relevant database, as returned by `read_schema_mapping()` for a single `db_id`. Structure: `{table_name: {"new_name": str, "columns": {old_col: new_col}}}`.
+</ParamField>
+
+<ParamField path="model_name" type="OpenAIModel" default="OpenAIModel.GPT_4O">
+  The OpenAI model to use for generation.
+</ParamField>
+
+<ParamField path="seed" type="integer" default="42">
+  Random seed passed to the completion call.
+</ParamField>
+
+<ParamField path="temperature" type="float" default="0">
+  Sampling temperature for the LLM.
+</ParamField>
+
+**Return value**
+
+Returns a `tuple[str, str]`: `(new_question, new_evidence)`. If the LLM response cannot be parsed as JSON, or if an exception occurs, the function returns the original `(question, evidence)` unchanged rather than raising.
+
+---
+
+## `read_schema_mapping()`
+
+Reads the schema mapping CSV and organises it as a nested dict keyed by `db_id`.
+
+```python
+from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+    read_schema_mapping,
+)
+
+db_mappings = read_schema_mapping("data/.../databases_naturalness_decreased_fixed.csv")
+# db_mappings["financial"]["account"]["new_name"]  → "acct"
+# db_mappings["financial"]["account"]["columns"]["account_id"]  → "acct_id"
+```
+
+<ParamField path="mapping_csv_path" type="string" required>
+  Path to the schema mapping CSV. Required columns: `db_id`, `table_name`, `column_name`, `new_table_name`, `new_column_name`.
+</ParamField>
+
+Returns a `dict` with the shape:
+
+```
+{
+  "<db_id>": {
+    "<table_name>": {
+      "new_name": "<new_table_name>",
+      "columns": {
+        "<column_name>": "<new_column_name>",
+        ...
+      }
+    },
+    ...
+  },
+  ...
+}
+```
+
+---
+
+## `print_nl_processing_summary()`
+
+Prints a formatted summary of the statistics dict returned by `process_nl_queries()`.
+
+```python
+from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+    print_nl_processing_summary,
+)
+
+print_nl_processing_summary(stats)
+```
+
+<ParamField path="stats" type="dict" required>
+  The statistics dict returned by `process_nl_queries()`.
+</ParamField>
+
+The function prints overall counts (total, skipped, processed, successful, failed) and per-database breakdowns to stdout. It adds a qualitative assessment line (EXCELLENT / GOOD / MODERATE / POOR) based on the success rate.
+
+---
+
+## CSV schemas
+
+### Input queries CSV (`queries_csv_path`)
+
+| Column | Type | Description |
+|---|---|---|
+| `question_id` | integer | Unique identifier matching the BIRD benchmark |
+| `db_id` | string | Database identifier |
+| `question` | string | Natural-language question (renamed `original_question` by the function) |
+| `evidence` | string | Evidence string (renamed `original_evidence` by the function) |
+| `SQL` | string | Gold SQL query (passed through unchanged) |
+| `difficulty` | string | Difficulty label (passed through unchanged) |
+
+Additional columns are preserved as-is in the output.
+
+### Schema mapping CSV (`mapping_csv_path`)
+
+| Column | Type | Description |
+|---|---|---|
+| `db_id` | string | Database identifier |
+| `table_name` | string | Original table name |
+| `column_name` | string | Original column name |
+| `new_table_name` | string | Obfuscated table name |
+| `new_column_name` | string | Obfuscated column name |
+
+### Output CSV (`output_csv_path`)
+
+| Column | Type | Description |
+|---|---|---|
+| `question_id` | integer | Identifier from the input row |
+| `db_id` | string | Database identifier |
+| `original_question` | string | Unmodified question from the input |
+| `original_evidence` | string | Unmodified evidence from the input |
+| `new_question` | string | LLM-generated less-natural question |
+| `new_evidence` | string | LLM-generated less-natural evidence |
+
+---
+
+## Complete usage example
+
+<CodeGroup>
+
+```python Batch processing
+import os
+from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+    process_nl_queries,
+    print_nl_processing_summary,
+)
+from src.core.model_manager.openai_model import OpenAIModel
+
+os.environ["OPENAI_API_KEY"] = "sk-..."
+
+stats = process_nl_queries(
+    queries_csv_path="data/augmentation/decrease_naturalness/new_sql_queries.csv",
+    mapping_csv_path="data/augmentation/decrease_naturalness/databases_naturalness_decreased_fixed.csv",
+    output_csv_path="data/augmentation/decrease_naturalness/experiments_dev/new_sql_nl_queries.csv",
+    model_name=OpenAIModel.GPT_4O,
+    seed=42,
+    temperature=0,
+)
+
+print_nl_processing_summary(stats)
+```
+
+```python Single item
+import os
+from src.textual_query_augmentation.decrease_naturalness.alter_nl_queries import (
+    generate_less_natural_nl,
+    read_schema_mapping,
+)
+from src.core.model_manager.openai_model import OpenAIModel
+
+os.environ["OPENAI_API_KEY"] = "sk-..."
+
+db_mappings = read_schema_mapping(
+    "data/augmentation/decrease_naturalness/databases_naturalness_decreased_fixed.csv"
+)
+
+new_q, new_ev = generate_less_natural_nl(
+    question="How many accounts were opened in the Prague district?",
+    evidence="Prague district refers to district_name = 'Prague'",
+    schema_mapping=db_mappings.get("financial", {}),
+    model_name=OpenAIModel.GPT_4O_MINI,
+    seed=0,
+    temperature=0,
+)
+
+print(new_q)
+print(new_ev)
+```
+
+</CodeGroup>
+
+<Tip>
+Set `temperature=0` and a fixed `seed` for reproducible augmentation. When you re-run the pipeline after a partial failure, already-written rows are automatically detected and skipped, so you only pay for the remaining LLM calls.
+</Tip>

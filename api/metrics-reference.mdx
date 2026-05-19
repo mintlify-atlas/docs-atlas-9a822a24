@@ -1,0 +1,223 @@
+---
+title: "Execution metrics: EX, EXP, EXR, and F1"
+description: "Precise definitions of the four execution metrics SQLMorph computes — EX, EXP, EXR, and F1 — with formulas, edge cases, and worked examples."
+---
+
+Binary execution accuracy (EX) is the standard metric for Text-to-SQL benchmarks: a query either produces the exact right rows or it doesn't. This pass/fail view hides important diagnostic information. Two failed queries can fail in completely different ways — one might return every correct row plus hundreds of spurious extras (high recall, low precision), while another might return only a handful of the required rows and nothing extraneous (high precision, low recall). SQLMorph closes this gap by computing three additional metrics — Execution Precision (EXP), Execution Recall (EXR), and F1 — that quantify *how wrong* a failed query is, not just *that* it failed.
+
+## Metric definitions
+
+### EX — execution accuracy
+
+EX is a binary indicator. It equals `1` if the set of rows returned by the predicted SQL exactly matches the set of rows returned by the ground-truth SQL, and `0` otherwise.
+
+```
+EX = 1  if  set(predicted_rows) == set(ground_truth_rows)
+EX = 0  otherwise
+```
+
+EX is computed by all seven evaluation techniques. For techniques other than `EXECUTION_ACCURACY`, EX is computed independently of the column-matching and cell-counting logic — it always reflects the raw row-set comparison.
+
+<Note>
+  EX compares sets, not multisets. Duplicate rows are deduplicated before comparison. A predicted query that returns the right rows in a different order still receives `EX = 1`.
+</Note>
+
+### EXP — execution precision
+
+EXP measures what fraction of the predicted result is correct. It is computed over matched cells after column alignment.
+
+```
+EXP = matched_cells / predicted_cells
+```
+
+Where:
+- `predicted_cells` = number of rows in prediction × number of predicted columns (or matched columns when `penalize_extra_pred_cols=False`)
+- `matched_cells` = cells from matched rows, counting exact and/or partial matches depending on the technique
+
+A low EXP means the system returned too much — it over-predicted rows or extra columns that have no counterpart in the ground truth.
+
+### EXR — execution recall
+
+EXR measures what fraction of the ground truth the prediction recovered.
+
+```
+EXR = matched_cells / ground_truth_cells
+```
+
+Where:
+- `ground_truth_cells` = number of ground-truth rows × number of ground-truth columns
+
+A low EXR means the system returned too little — it missed rows or columns that should have been present.
+
+### F1 score
+
+F1 is the harmonic mean of EXP and EXR, balancing both dimensions into a single score.
+
+```
+F1 = 2 × (EXP × EXR) / (EXP + EXR)
+
+F1 = 0  when EXP + EXR = 0
+```
+
+The harmonic mean penalises extreme imbalances: a system with `EXP = 1.0` and `EXR = 0.1` gets `F1 = 0.18`, not `0.55`.
+
+## Edge case handling
+
+The metric computation in `assign_metrics()` handles empty result sets consistently across all techniques:
+
+| Condition | EXP | EXR | F1 | Notes |
+| --------- | --- | --- | -- | ----- |
+| Both sets empty | 1.0 | 1.0 | 1.0 | Both queries returned nothing; treated as perfect match |
+| Only ground truth empty | 0.0 | 1.0 | 0.0 | System predicted rows when none were expected |
+| Only prediction empty | 1.0 | 0.0 | 0.0 | System returned nothing when rows were expected |
+| Normal case | matched/predicted | matched/ground_truth | harmonic mean | Standard computation |
+
+## EX versus EXP/EXR/F1
+
+When `EX = 1`, all four metrics equal `1.0` — the prediction is perfect. When `EX = 0`, the binary score gives no further information. EXP, EXR, and F1 fill that gap.
+
+| Scenario | EX | EXP | EXR | F1 | What happened |
+| -------- | -- | --- | --- | -- | ------------- |
+| Perfect prediction | 1 | 1.0 | 1.0 | 1.0 | Exact match |
+| Over-prediction | 0 | low | high | medium | Returned correct rows plus many extras |
+| Under-prediction | 0 | high | low | medium | Returned only a subset of correct rows |
+| Wrong prediction | 0 | ~0 | ~0 | ~0 | Returned mostly wrong data |
+| Partially correct | 0 | medium | medium | medium | Some rows correct, some wrong |
+
+<Tip>
+  When EX=0 but F1 is above 0.8, the system is close — it may have a minor filter error or a slightly off aggregation. When F1 is below 0.2, the query structure is likely fundamentally wrong.
+</Tip>
+
+## Worked example
+
+Consider a `schools` database where the ground-truth query returns the top-3 schools ranked by SAT performance:
+
+**Ground-truth SQL**
+```sql
+SELECT T1.Phone
+FROM schools AS T1
+INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds
+ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC
+LIMIT 3;
+```
+
+**Ground-truth result set** (3 rows × 1 column = 3 cells)
+
+| Phone |
+| ----- |
+| (650) 329-3700 |
+| (415) 749-3500 |
+| (510) 531-5300 |
+
+### Scenario A: over-prediction
+
+The predicted query returns the right 3 rows but also 7 extra rows (wrong schools):
+
+**Predicted result** (10 rows × 1 column = 10 cells)
+
+| Phone |
+| ----- |
+| (650) 329-3700 |
+| (415) 749-3500 |
+| (510) 531-5300 |
+| (213) 555-0100 |
+| … 6 more wrong rows … |
+
+Using `EXACT_COLUMN_AND_EXACT_CELL`:
+- `matched_cells = 3` (the 3 correct rows × 1 column)
+- `predicted_cells = 10`
+- `ground_truth_cells = 3`
+
+```
+EX  = 0       (sets differ — prediction has 10 distinct rows, ground truth has 3)
+EXP = 3 / 10 = 0.30
+EXR = 3 / 3  = 1.00
+F1  = 2 × (0.30 × 1.00) / (0.30 + 1.00) ≈ 0.46
+```
+
+The high EXR tells you the system found everything it needed to find. The low EXP tells you it also returned a lot of garbage. Without EXP and EXR, EX=0 gives you no hint that the system was mostly right.
+
+### Scenario B: under-prediction
+
+The predicted query returns only 1 of the 3 correct schools, and nothing else:
+
+**Predicted result** (1 row × 1 column = 1 cell)
+
+| Phone |
+| ----- |
+| (650) 329-3700 |
+
+```
+EX  = 0
+EXP = 1 / 1  = 1.00
+EXR = 1 / 3  ≈ 0.33
+F1  = 2 × (1.00 × 0.33) / (1.00 + 0.33) ≈ 0.50
+```
+
+The high EXP tells you everything the system returned was correct. The low EXR tells you it missed two-thirds of the required rows. Again, EX=0 alone gives you nothing to act on.
+
+## `metrics` response field reference
+
+The `metrics` dictionary is the primary output of `run_evaluation()`. All values are scalars.
+
+<ResponseField name="EX" type="integer" required>
+  Binary execution accuracy. `1` if `set(predicted_rows) == set(ground_truth_rows)`, otherwise `0`. Always present.
+</ResponseField>
+
+<ResponseField name="EXP" type="float">
+  Execution precision in the range `[0.0, 1.0]`. Present for all techniques except `EXECUTION_ACCURACY`. A value of `1.0` means every predicted cell was matched; `0.0` means no predicted cell was matched.
+</ResponseField>
+
+<ResponseField name="EXR" type="float">
+  Execution recall in the range `[0.0, 1.0]`. Present for all techniques except `EXECUTION_ACCURACY`. A value of `1.0` means every ground-truth cell was recovered; `0.0` means nothing was recovered.
+</ResponseField>
+
+<ResponseField name="F1" type="float">
+  Harmonic mean of EXP and EXR, in the range `[0.0, 1.0]`. Present for all techniques except `EXECUTION_ACCURACY`. `0.0` when either EXP or EXR is `0`.
+</ResponseField>
+
+## Complete example with metric output
+
+```python
+from src.metrics.evaluation import Evaluation, EvaluationTechnique
+from src.core.database.database_handler import DBMS
+from src.core.model_manager import OpenAIModel
+
+config = {
+    "evaluation_technique": EvaluationTechnique.EXACT_COLUMN_AND_EXACT_CELL,
+    "db_params": {
+        "dbms": DBMS.SQLITE,
+        "db_path": "data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite",
+    },
+    "penalize_extra_pred_cols": True,
+    "embedding_model": None,
+    "logs_dir_path": "data/evaluation_outputs/",
+}
+
+# Over-prediction scenario
+evaluator = Evaluation(config)
+res = evaluator.run_evaluation(
+    predicted_sql="""
+        SELECT T3.Phone, T3.City, T3.State, T3.MailStreet
+        FROM satscores T1
+        JOIN schools T3 ON T1.cds = T3.CDSCode
+        WHERE T1.NumTstTakr IS NOT NULL AND T1.NumGE1500 IS NOT NULL
+        ORDER BY (T1.NumGE1500 * 1.0 / T1.NumTstTakr) DESC
+        LIMIT 10;
+    """,
+    ground_truth_sql="""
+        SELECT T1.Phone
+        FROM schools AS T1
+        INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds
+        ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC
+        LIMIT 10;
+    """,
+    log=False,
+)
+
+print(res["metrics"])
+# Example output: {'EX': 0, 'EXP': 0.25, 'EXR': 1.0, 'F1': 0.4}
+# EXR=1.0 → all ground-truth Phone values were present in the prediction
+# EXP=0.25 → only 1 in 4 predicted columns (Phone) matched the ground truth
+print(f"Latency: {res['latency']:.3f}s")
+```

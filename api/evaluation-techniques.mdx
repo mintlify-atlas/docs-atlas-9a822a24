@@ -1,0 +1,215 @@
+---
+title: "EvaluationTechnique enum: all seven techniques"
+description: "Reference for all seven EvaluationTechnique enum values in SQLMorph — what each one measures, when to use it, and whether it needs an embedding model."
+---
+
+SQLMorph provides seven evaluation techniques through the `EvaluationTechnique` enum. Each technique implements a different strategy for comparing the result set of a predicted SQL query against the ground-truth result set. They range from a simple binary row-set equality check (`EXECUTION_ACCURACY`) to embedding-based approaches that align columns semantically and score rows by cosine similarity (`UNIFIED_COLUMN_AND_SEMANTIC_ROW`). You select the technique once when you construct an `Evaluation` instance, and it controls the entire pipeline.
+
+## Selecting a technique
+
+```python
+from src.metrics.evaluation import EvaluationTechnique
+
+technique = EvaluationTechnique.SEMANTIC_COLUMN_AND_PARTIAL_CELL
+```
+
+Pass the selected value in the `config` dictionary:
+
+```python
+config = {
+    "evaluation_technique": EvaluationTechnique.SEMANTIC_COLUMN_AND_PARTIAL_CELL,
+    # ... other config keys
+}
+```
+
+<Warning>
+  Techniques that require an embedding model (`SEMANTIC_COLUMN_AND_EXACT_CELL`, `SEMANTIC_COLUMN_AND_PARTIAL_CELL`, and `UNIFIED_COLUMN_AND_SEMANTIC_ROW`) call the OpenAI Embeddings API during evaluation. Set the `OPENAI_API_KEY` environment variable before running and ensure your `config["embedding_model"]` is a valid `OpenAIModel` value.
+</Warning>
+
+## All seven techniques
+
+<AccordionGroup>
+  <Accordion title="EXECUTION_ACCURACY">
+    **Enum value:** `EvaluationTechnique.EXECUTION_ACCURACY`
+
+    **String value:** `"execution_accuracy"`
+
+    **Embedding required:** No
+
+    **What it measures**
+
+    Binary row-set equality. Returns `EX = 1` if `set(predicted_rows) == set(ground_truth_rows)`, otherwise `EX = 0`. This is the standard metric used by the BIRD benchmark. It produces only an `EX` score — no `EXP`, `EXR`, or `F1`.
+
+    **When to use it**
+
+    Use when you need a direct comparison against published BIRD leaderboard scores, or as a fast sanity check before running a heavier technique. Because it ignores column names entirely and treats rows as opaque tuples, it is sensitive to column ordering in `SELECT` clauses and will return `EX = 0` if the predicted query returns extra columns — even if the data is correct.
+
+    **Returned metrics**
+
+    | Key | Type | Description |
+    | --- | ---- | ----------- |
+    | `EX` | int | `1` if result sets match exactly, `0` otherwise |
+  </Accordion>
+
+  <Accordion title="EXACT_COLUMN_AND_EXACT_CELL">
+    **Enum value:** `EvaluationTechnique.EXACT_COLUMN_AND_EXACT_CELL`
+
+    **String value:** `"exact_column_and_exact_cell"`
+
+    **Embedding required:** No
+
+    **What it measures**
+
+    Column names are matched by exact string equality. The pipeline finds the intersection of predicted and ground-truth column names, projects both result sets onto those shared columns, and then counts matched rows using exact tuple equality. Precision and recall are computed at the cell level: `matched_cells / predicted_cells` and `matched_cells / ground_truth_cells` respectively.
+
+    **When to use it**
+
+    Use when the Text-to-SQL system is expected to produce column aliases that exactly match the ground truth — common when the ground truth uses bare column names with no renaming. This is the strictest column-aware technique. If the predicted query renames a column (e.g., `phone AS contact_phone`), that column will not be matched even if the values are identical.
+
+    **Returned metrics**
+
+    | Key | Type | Description |
+    | --- | ---- | ----------- |
+    | `EX` | int | Binary row-set equality |
+    | `EXP` | float | Execution precision over matched cells |
+    | `EXR` | float | Execution recall over matched cells |
+    | `F1` | float | Harmonic mean of EXP and EXR |
+  </Accordion>
+
+  <Accordion title="EXACT_COLUMN_AND_PARTIAL_CELL">
+    **Enum value:** `EvaluationTechnique.EXACT_COLUMN_AND_PARTIAL_CELL`
+
+    **String value:** `"exact_column_and_partial_cell"`
+
+    **Embedding required:** No
+
+    **What it measures**
+
+    Columns are matched by exact name, the same as `EXACT_COLUMN_AND_EXACT_CELL`. The difference is in row matching: after exact row matches are counted, the remaining unmatched rows undergo a greedy partial-row matching phase. Each remaining predicted row is paired with the ground-truth row that shares the most cell values in common (normalised by the number of shared columns). This produces fractional cell-match contributions for partially correct rows.
+
+    **When to use it**
+
+    Use when you expect queries that are directionally correct but off by a few cell values — for example, when the system predicts slightly wrong aggregation values or has off-by-one filter errors. The partial matching surface gives credit for rows that are close but not identical.
+
+    **Returned metrics**
+
+    | Key | Type | Description |
+    | --- | ---- | ----------- |
+    | `EX` | int | Binary row-set equality |
+    | `EXP` | float | Execution precision, including fractional partial matches |
+    | `EXR` | float | Execution recall, including fractional partial matches |
+    | `F1` | float | Harmonic mean of EXP and EXR |
+  </Accordion>
+
+  <Accordion title="SEMANTIC_COLUMN_AND_EXACT_CELL">
+    **Enum value:** `EvaluationTechnique.SEMANTIC_COLUMN_AND_EXACT_CELL`
+
+    **String value:** `"semantic_column_and_exact_cell"`
+
+    **Embedding required:** Yes
+
+    **What it measures**
+
+    Columns are matched semantically using OpenAI embeddings and the Hungarian algorithm. For each column, a text representation is built from the column name, its inferred data type, and up to ten of its most frequent values. Embeddings of those texts are compared with cosine similarity, and the Hungarian algorithm finds the optimal one-to-one pairing. Only pairs with similarity > 0.7 are kept. Row matching on the semantically aligned columns is then performed with exact tuple equality (no partial credit).
+
+    **When to use it**
+
+    Use when the predicted query uses different column aliases than the ground truth but those columns contain the same data — for instance, `phone_number` vs `Phone` vs `contact`. This technique tolerates naming discrepancies that would cause `EXACT_COLUMN_AND_EXACT_CELL` to miss valid matches.
+
+    **Returned metrics**
+
+    | Key | Type | Description |
+    | --- | ---- | ----------- |
+    | `EX` | int | Binary row-set equality |
+    | `EXP` | float | Execution precision over semantically matched cells |
+    | `EXR` | float | Execution recall over semantically matched cells |
+    | `F1` | float | Harmonic mean of EXP and EXR |
+  </Accordion>
+
+  <Accordion title="SEMANTIC_COLUMN_AND_PARTIAL_CELL">
+    **Enum value:** `EvaluationTechnique.SEMANTIC_COLUMN_AND_PARTIAL_CELL`
+
+    **String value:** `"semantic_column_and_partial_cell"`
+
+    **Embedding required:** Yes
+
+    **What it measures**
+
+    Combines semantic column matching (identical to `SEMANTIC_COLUMN_AND_EXACT_CELL`) with partial row matching (identical to `EXACT_COLUMN_AND_PARTIAL_CELL`). After semantically aligned columns are determined, rows are matched first exactly, then residual unmatched rows are scored greedily by per-cell value overlap. Both exact and fractional contributions accumulate into the final `matched_cells` count.
+
+    **When to use it**
+
+    This is the most commonly recommended technique for evaluating Text-to-SQL systems on BIRD. It handles both renamed columns and partially correct result sets, making it robust to the two most common failure modes: alias mismatch and aggregation error. It is the technique used in the `__main__` example in `evaluation.py`.
+
+    **Returned metrics**
+
+    | Key | Type | Description |
+    | --- | ---- | ----------- |
+    | `EX` | int | Binary row-set equality |
+    | `EXP` | float | Precision with semantic column alignment and partial row credit |
+    | `EXR` | float | Recall with semantic column alignment and partial row credit |
+    | `F1` | float | Harmonic mean of EXP and EXR |
+  </Accordion>
+
+  <Accordion title="NO_COLUMN_AND_PARTIAL_CELL">
+    **Enum value:** `EvaluationTechnique.NO_COLUMN_AND_PARTIAL_CELL`
+
+    **String value:** `"no_column_and_partial_cell"`
+
+    **Embedding required:** No
+
+    **What it measures**
+
+    Column names are completely ignored. Each row is converted to a set of cell value strings, discarding column identity entirely. Rows are matched first by exact cell-set equality, then residual rows are paired using Jaccard similarity over their cell-value sets. Precision and recall are computed over individual cell values rather than whole cells in a column-aligned grid.
+
+    **When to use it**
+
+    Use when the ground truth and prediction may return equivalent data under entirely different schemas — for example, after schema renaming experiments in TQA, or when comparing systems that produce differently structured outputs. Because column identity is ignored, this technique cannot distinguish between a query that returns `(name, city)` and one that returns `(city, name)` if the values happen to be the same; it treats them as identical.
+
+    **Returned metrics**
+
+    | Key | Type | Description |
+    | --- | ---- | ----------- |
+    | `EX` | int | Binary row-set equality |
+    | `EXP` | float | Precision based on cell-value set overlap |
+    | `EXR` | float | Recall based on cell-value set overlap |
+    | `F1` | float | Harmonic mean of EXP and EXR |
+  </Accordion>
+
+  <Accordion title="UNIFIED_COLUMN_AND_SEMANTIC_ROW">
+    **Enum value:** `EvaluationTechnique.UNIFIED_COLUMN_AND_SEMANTIC_ROW`
+
+    **String value:** `"unified_column_and_semantic_row"`
+
+    **Embedding required:** Yes
+
+    **What it measures**
+
+    This technique takes a fundamentally different approach from the others. Instead of projecting onto matched columns, it builds a unified column space from the union of all predicted and ground-truth columns (sorted lexicographically). Both result sets are padded with `"N/A"` for any column they don't contain, and each row is serialised as a pipe-separated string. The Hungarian algorithm then matches predicted rows to ground-truth rows based on cosine similarity between their row-level embeddings. A coverage penalty — the fraction of ground-truth columns that appear in the predicted result — is multiplied into each match score. `EXP` and `EXR` are computed as `sum(penalised_similarity) / P` and `sum(penalised_similarity) / G` respectively, where `P` and `G` are the row counts.
+
+    **When to use it**
+
+    Use when you want holistic row-level semantic similarity rather than cell-counting. This technique is most appropriate for exploratory analysis where the predicted query may return a structurally different but semantically related result set. It is the most computationally expensive technique because it embeds every row in both result sets.
+
+    **Returned metrics**
+
+    | Key | Type | Description |
+    | --- | ---- | ----------- |
+    | `EX` | int | Binary row-set equality |
+    | `EXP` | float | Mean penalised row-similarity across predicted rows |
+    | `EXR` | float | Mean penalised row-similarity across ground-truth rows |
+    | `F1` | float | Harmonic mean of EXP and EXR |
+  </Accordion>
+</AccordionGroup>
+
+## Technique comparison at a glance
+
+| Technique | Column matching | Row matching | Embedding | Metrics |
+| --------- | --------------- | ------------ | --------- | ------- |
+| `EXECUTION_ACCURACY` | None | Exact set equality | No | EX |
+| `EXACT_COLUMN_AND_EXACT_CELL` | Exact name | Exact tuple | No | EX, EXP, EXR, F1 |
+| `EXACT_COLUMN_AND_PARTIAL_CELL` | Exact name | Exact + partial greedy | No | EX, EXP, EXR, F1 |
+| `SEMANTIC_COLUMN_AND_EXACT_CELL` | Semantic (cosine > 0.7) | Exact tuple | Yes | EX, EXP, EXR, F1 |
+| `SEMANTIC_COLUMN_AND_PARTIAL_CELL` | Semantic (cosine > 0.7) | Exact + partial greedy | Yes | EX, EXP, EXR, F1 |
+| `NO_COLUMN_AND_PARTIAL_CELL` | None (ignored) | Jaccard cell-set | No | EX, EXP, EXR, F1 |
+| `UNIFIED_COLUMN_AND_SEMANTIC_ROW` | Union + coverage penalty | Row embedding cosine | Yes | EX, EXP, EXR, F1 |

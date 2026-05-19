@@ -1,0 +1,115 @@
+---
+title: "Environment variables and configuration"
+description: "Configure SQLMorph using a .env file for API keys and shell scripts that set evaluation technique, database path, and logging settings."
+---
+
+SQLMorph uses a two-layer configuration system. Secrets such as API keys live in a `.env` file that you keep out of version control. Runtime settings — paths, evaluation techniques, logging — are set by sourcing shell scripts before you run experiments. This separation means you can commit your experiment configurations as shell scripts while keeping credentials private.
+
+## .env file setup
+
+Copy `.env.example` to `.env` in the project root and replace the placeholder value with your own key.
+
+```bash .env.example
+# copy this file to .env in project root directory and replace the values with your own
+
+# Metrics
+## OpenAI (Required for semantic metrics)
+OPENAI_API_KEY=<your_openai_api_key>
+```
+
+`OPENAI_API_KEY` is required in two situations:
+
+- **Semantic metrics** — evaluation techniques such as `semantic_column_and_exact_cell`, `semantic_column_and_partial_cell`, and `unified_column_and_semantic_row` use OpenAI embedding models to compare column names.
+- **NL query generation (TQA)** — the TQA pipeline calls GPT-4o to generate natural-language query variants.
+
+<Steps>
+  <Step title="Copy the example file">
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+  <Step title="Fill in your OpenAI API key">
+    Open `.env` and replace `<your_openai_api_key>` with a valid key from the [OpenAI platform](https://platform.openai.com/api-keys).
+  </Step>
+  <Step title="Load the variables into your shell">
+    ```bash
+    source scripts/load_dotenv.sh
+    ```
+    The script reads each line from `.env`, skips comments and blank lines, and exports the key-value pairs into your current shell session.
+  </Step>
+</Steps>
+
+<Note>
+  Run `source scripts/load_dotenv.sh` every time you open a new terminal session, or add it to your shell profile if you work with SQLMorph regularly.
+</Note>
+
+## JQE configuration script
+
+`scripts/jqe_config.sh` sets the directory paths used by the JQE (Join-Query Expansion) pipeline.
+
+```bash
+source scripts/jqe_config.sh
+```
+
+```bash scripts/jqe_config.sh
+#!/bin/bash
+
+export DATA_FOLDER=data
+export RULE_INPUTS_BASE=data/rule_inputs/
+export GRAPH_DATA_BASE=data/graph_data/bird_graphs/pickles
+export RULE_OUTPUTS_BASE=data/rule_outputs/jq_augmentation
+```
+
+Source this script before running any JQE experiment. It configures where rule inputs, graph data, and augmented query outputs are read from and written to.
+
+## Metrics configuration script
+
+`scripts/metrics_config.sh` controls how the evaluation pipeline behaves — which metric to use, which database to query, and whether to write logs.
+
+```bash
+source scripts/metrics_config.sh
+```
+
+```bash scripts/metrics_config.sh
+#!/bin/bash
+
+# Evaluation technique
+export EVAL_TECHNIQUE="exact_column_and_exact_cell"
+
+# Database configuration
+export DBMS="SQLITE"
+export DB_PATH="data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite"
+
+# Evaluation settings
+export PENALIZE_EXTRA_COLUMNS="true"
+
+# Embedding model for semantic evaluations
+export EMBEDDING_MODEL="TEXT_EMBEDDING_3_SMALL"
+
+# Logging configuration
+export LOGS_DIR_PATH="data/evaluation_logs/"
+export ENABLE_LOG="false"
+```
+
+Edit the values in the script to match your experiment, then source it before running metrics.
+
+<Note>
+  The script exports `PENALIZE_EXTRA_COLUMNS`, but `load_config_from_env()` in `evaluation.py` reads `PENALIZE_EXTRA_PRED_COLS`. If you use the CLI, rename the variable in your copy of the script to `PENALIZE_EXTRA_PRED_COLS`.
+</Note>
+
+## Environment variable reference
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `OPENAI_API_KEY` | Yes (for semantic metrics and TQA) | — | OpenAI API key used for embedding-based evaluation and NL query generation. |
+| `DATA_FOLDER` | JQE only | `data` | Root data directory for the JQE pipeline. |
+| `RULE_INPUTS_BASE` | JQE only | `data/rule_inputs/` | Path to the rule input files consumed by JQE. |
+| `GRAPH_DATA_BASE` | JQE only | `data/graph_data/bird_graphs/pickles` | Path to pre-built graph pickle files for BIRD. |
+| `RULE_OUTPUTS_BASE` | JQE only | `data/rule_outputs/jq_augmentation` | Output directory for JQE-augmented queries. |
+| `EVAL_TECHNIQUE` | Metrics only | `exact_column_and_exact_cell` | Evaluation method. Options: `execution_accuracy`, `exact_column_and_exact_cell`, `exact_column_and_partial_cell`, `semantic_column_and_exact_cell`, `semantic_column_and_partial_cell`, `no_column_and_partial_cell`, `unified_column_and_semantic_row`. |
+| `DBMS` | Metrics only | `SQLITE` | Database engine to use. Options: `SQLITE`, `DUCKDB`. |
+| `DB_PATH` | Metrics only | `data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite` | Path to the database file. |
+| `PENALIZE_EXTRA_PRED_COLS` | Metrics only | `true` | When `true`, predicted result sets with extra columns beyond the gold are penalised. Read by `load_config_from_env()` in `evaluation.py`. Note: the default `metrics_config.sh` exports this as `PENALIZE_EXTRA_COLUMNS` — rename the variable in the script if you use the CLI. |
+| `EMBEDDING_MODEL` | Semantic metrics only | `TEXT_EMBEDDING_3_SMALL` | OpenAI embedding model for semantic column comparison. Options: `TEXT_EMBEDDING_3_SMALL`, `TEXT_EMBEDDING_3_LARGE`, `TEXT_EMBEDDING_ADA_002`. |
+| `LOGS_DIR_PATH` | Metrics only | `data/evaluation_logs/` | Directory where evaluation log files are written. |
+| `ENABLE_LOG` | Metrics only | `false` | Set to `true` to write per-query evaluation logs to `LOGS_DIR_PATH`. |

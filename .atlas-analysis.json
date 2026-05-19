@@ -1,0 +1,102 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "SQLMorph",
+  "projectDescription": "A research framework for robust Text-to-SQL evaluation via query mutation techniques and fine-grained execution metrics.",
+  "theme": "luma",
+  "primaryColor": "#d3fa63",
+  "lightColor": "#8c9454",
+  "darkColor": "#2e1e3c",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/join-query-expansion",
+              "concepts/textual-query-augmentation",
+              "concepts/metrics"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/jqe-usage",
+              "guides/tqa-usage",
+              "guides/metrics-usage",
+              "guides/experiments"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment",
+              "configuration/database-backends",
+              "configuration/model-providers"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Evaluation",
+            "pages": [
+              "api/evaluation",
+              "api/evaluation-techniques",
+              "api/metrics-reference"
+            ]
+          },
+          {
+            "group": "Query Mutation",
+            "pages": [
+              "api/jqe-api",
+              "api/tqa-api"
+            ]
+          },
+          {
+            "group": "Core Utilities",
+            "pages": [
+              "api/database-handler",
+              "api/model-manager"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Join Query Expansion (JQE): systematically increases SQL structural complexity through semantically valid join additions",
+    "Textual Query Augmentation (TQA): generates controlled natural language perturbations to assess robustness to linguistic variation",
+    "Fine-grained execution metrics: Execution Precision (EXP), Execution Recall (EXR), and F1 beyond binary Execution Accuracy",
+    "Multi-LLM support: OpenAI, HuggingFace, Ollama, Google Gemini, and Together AI backends",
+    "Multi-DBMS support: SQLite and DuckDB database adapters",
+    "Graph-based schema analysis using NetworkX for join path discovery",
+    "Isomorphic query deduplication to ensure diverse evaluation sets",
+    "Evaluated on BIRD benchmark databases with CHESS, DIN-SQL, and MAC-SQL systems"
+  ],
+  "publicApiSurface": [
+    "Evaluation class (src/metrics/evaluation.py)",
+    "EvaluationTechnique enum: EXECUTION_ACCURACY, EXACT_COLUMN_AND_EXACT_CELL, EXACT_COLUMN_AND_PARTIAL_CELL, SEMANTIC_COLUMN_AND_EXACT_CELL, SEMANTIC_COLUMN_AND_PARTIAL_CELL, NO_COLUMN_AND_PARTIAL_CELL, UNIFIED_COLUMN_AND_SEMANTIC_ROW",
+    "Evaluation.run_evaluation(predicted_sql, ground_truth_sql, log=True)",
+    "aug_n_table_sql_queries(db_id, num_tables, graph_first, max_queries, max_isomorphic, sort_asc)",
+    "python -m src/join_query_expansion/main.py <db_id> <num_tables> [-gf]",
+    "python src/metrics/evaluation.py --predicted-sql <sql> --ground-truth-sql <sql>",
+    "DatabaseHandler(dbms, connection_params)",
+    "DBMS enum: SQLITE, DUCKDB",
+    "ModelManager.create_model(model_provider, model_type, model_name, ...)",
+    "ModelProvider enum: OPENAI, OLLAMA, HUGGINGFACE",
+    "OpenAIModel enum (GPT_4O, TEXT_EMBEDDING_3_SMALL, etc.)",
+    "process_nl_queries(queries_csv_path, mapping_csv_path, output_csv_path, model_name, seed, temperature)"
+  ]
+}

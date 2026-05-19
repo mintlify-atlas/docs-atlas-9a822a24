@@ -1,0 +1,203 @@
+---
+title: "DatabaseHandler: SQLite and DuckDB query API"
+description: "Unified Python interface for SQLite and DuckDB connections in SQLMorph, including the DBMS enum, adapter pattern, and query execution API."
+---
+
+`DatabaseHandler` wraps SQLite and DuckDB behind a single interface so that the rest of SQLMorph can execute queries without caring which engine is in use. On construction it immediately resolves the correct adapter from the `ADAPTERS` registry, instantiates it with the provided connection parameters, and calls `connect_to_database()`. All SQL execution, connection-liveness checks, and teardown flow through the same four methods regardless of the underlying engine.
+
+## `DBMS` enum
+
+Selects the database engine. Pass a member of this enum as the first argument to `DatabaseHandler`.
+
+```python
+from src.core.database.database_handler import DBMS
+
+DBMS.SQLITE   # "sqlite" — backed by the standard library sqlite3 module
+DBMS.DUCKDB   # "duckdb" — backed by the duckdb Python package
+```
+
+| Member | Value | Adapter class |
+|---|---|---|
+| `DBMS.SQLITE` | `"sqlite"` | `SQLiteAdapter` |
+| `DBMS.DUCKDB` | `"duckdb"` | `DuckDBAdapter` |
+
+---
+
+## `DatabaseHandler` class
+
+### Constructor
+
+```python
+DatabaseHandler(dbms: DBMS, connection_params: dict)
+```
+
+<ParamField path="dbms" type="DBMS" required>
+  A `DBMS` enum member that identifies the engine. Raises `ValueError` if an unsupported value is passed.
+</ParamField>
+
+<ParamField path="connection_params" type="dict" required>
+  A dict of connection parameters forwarded to the selected adapter. The required keys differ by engine — see the usage examples below. For both adapters, the key `db_path` holds the absolute path to the database file.
+</ParamField>
+
+The constructor calls `connect_to_database()` automatically; you do not need to call it yourself after instantiation.
+
+---
+
+### `connect_to_database()`
+
+Establishes the connection via the selected adapter. Called automatically by the constructor.
+
+```python
+handler.connect_to_database()
+```
+
+Raises the underlying adapter exception (e.g., `sqlite3.OperationalError`) if the connection cannot be opened.
+
+---
+
+### `is_connection_alive()`
+
+Tests whether the connection is still active by executing `SELECT 1`.
+
+```python
+alive: bool = handler.is_connection_alive()
+```
+
+Returns `True` if the query succeeds and returns a result, `False` if any exception is raised.
+
+---
+
+### `run_query()`
+
+Executes a SQL query against the connected database.
+
+```python
+column_names, rows = handler.run_query(query)
+# or
+cursor = handler.run_query(query, return_cursor=True)
+```
+
+<ParamField path="query" type="string" required>
+  The SQL statement to execute. The statement is passed directly to the adapter's cursor; no sanitisation is performed.
+</ParamField>
+
+<ParamField path="return_cursor" type="boolean" default="False">
+  When `True`, the raw database cursor is returned instead of fetched results. Useful when you need fine-grained control over result iteration or when the result set is too large to fetch all at once.
+</ParamField>
+
+**Return value when `return_cursor=False`** (default):
+
+<ResponseField name="column_names" type="list[str]">
+  Column names in the order returned by the query, derived from `cursor.description`.
+</ResponseField>
+
+<ResponseField name="rows" type="list[tuple]">
+  All rows fetched by `cursor.fetchall()`, where each row is a tuple of column values.
+</ResponseField>
+
+<Warning>
+The SQLite adapter returns the exception object when a query fails instead of raising it. The DuckDB adapter raises. Check the return type when using `DBMS.SQLITE` if your code handles errors programmatically.
+</Warning>
+
+---
+
+### `close_connection()`
+
+Closes the database connection and releases any held resources.
+
+```python
+handler.close_connection()
+```
+
+Safe to call even if no adapter is set; logs a warning and returns without error.
+
+---
+
+## Adapter pattern
+
+`DatabaseHandler` uses an `ADAPTERS` dict to map `DBMS` members to concrete adapter classes:
+
+```python
+ADAPTERS = {
+    DBMS.SQLITE: SQLiteAdapter,
+    DBMS.DUCKDB: DuckDBAdapter,
+}
+```
+
+Both adapters implement the `BaseAdapter` abstract interface, which defines three methods: `connect()`, `run_query(query, return_cursor=False)`, and `close_connection()`. You can register a custom adapter by extending `BaseAdapter` and adding your class to `ADAPTERS` before constructing a `DatabaseHandler`.
+
+---
+
+## Usage examples
+
+<Tabs>
+  <Tab title="SQLite">
+    ```python
+    from src.core.database.database_handler import DatabaseHandler, DBMS
+
+    handler = DatabaseHandler(
+        dbms=DBMS.SQLITE,
+        connection_params={
+            "db_path": "/absolute/path/to/financial/financial.sqlite",
+        },
+    )
+
+    # Execute a query
+    cols, rows = handler.run_query(
+        "SELECT account_id, district_id FROM account LIMIT 10"
+    )
+    print(cols)   # ['account_id', 'district_id']
+    print(rows)   # [(1, 18), (2, 1), ...]
+
+    # Check liveness
+    print(handler.is_connection_alive())  # True
+
+    # Tidy up
+    handler.close_connection()
+    ```
+  </Tab>
+  <Tab title="DuckDB">
+    ```python
+    from src.core.database.database_handler import DatabaseHandler, DBMS
+
+    handler = DatabaseHandler(
+        dbms=DBMS.DUCKDB,
+        connection_params={
+            "db_path": "/absolute/path/to/analytics.duckdb",
+        },
+    )
+
+    cols, rows = handler.run_query(
+        "SELECT COUNT(*) AS total FROM transactions"
+    )
+    print(cols)   # ['total']
+    print(rows)   # [(42000,)]
+
+    handler.close_connection()
+    ```
+  </Tab>
+  <Tab title="EX validation pattern">
+    ```python
+    from src.core.database.database_handler import DatabaseHandler, DBMS
+
+    # Pattern used in alter_sql_queries.py to compute the EX metric
+    gt_handler = DatabaseHandler(
+        dbms=DBMS.SQLITE,
+        connection_params={"db_path": f"{original_db_root}/{db_id}/{db_id}.sqlite"},
+    )
+    new_handler = DatabaseHandler(
+        dbms=DBMS.SQLITE,
+        connection_params={"db_path": f"{new_db_root}/{db_id}/{db_id}.sqlite"},
+    )
+
+    gt_cols, gt_rows = gt_handler.run_query(original_sql)
+    pred_cols, pred_rows = new_handler.run_query(updated_sql)
+
+    ex = 1 if set(gt_rows) == set(pred_rows) else 0
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+The `connection_params` dict is passed through to the adapter unchanged. Both `SQLiteAdapter` and `DuckDBAdapter` only read the `db_path` key. If you build a custom adapter that needs additional keys (e.g., host, port, credentials), add them here.
+</Note>

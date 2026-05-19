@@ -1,0 +1,148 @@
+---
+title: "Evaluate SQL queries with fine-grained metrics"
+description: "Run relaxed evaluation metrics — EX, EXP, EXR, and F1 — on predicted SQL queries using the SQLMorph evaluation framework via CLI or Python API."
+---
+
+The SQLMorph evaluation framework goes beyond binary Exact Match by providing a family of relaxed metrics that measure how much of the correct result a predicted SQL query actually recovers. You can evaluate a single query pair from the command line or embed the evaluator in a script to process a full benchmark. Four metrics are available depending on the evaluation technique you choose: Execution Accuracy (EX), Execution Precision (EXP), Execution Recall (EXR), and F1.
+
+<Tabs>
+  <Tab title="CLI">
+    ## CLI usage
+
+    The CLI reads its configuration from environment variables set by `scripts/metrics_config.sh`. Edit that file to select the evaluation technique, database path, and embedding model, then source it before running.
+
+    ### Step 1: Configure settings
+
+    Open `scripts/metrics_config.sh` and edit the exported variables:
+
+    ```bash
+    # scripts/metrics_config.sh
+
+    export EVAL_TECHNIQUE="semantic_column_and_partial_cell"
+    export DBMS="SQLITE"
+    export DB_PATH="data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite"
+    export PENALIZE_EXTRA_PRED_COLS="true"
+    export EMBEDDING_MODEL="TEXT_EMBEDDING_3_SMALL"
+    export LOGS_DIR_PATH="data/evaluation_logs/"
+    export ENABLE_LOG="false"
+    ```
+
+    <Note>
+      The default `scripts/metrics_config.sh` exports `PENALIZE_EXTRA_COLUMNS`, but `load_config_from_env()` in `evaluation.py` reads `PENALIZE_EXTRA_PRED_COLS`. Rename the variable in the script to `PENALIZE_EXTRA_PRED_COLS` for CLI mode to take effect.
+    </Note>
+
+    Then source the file:
+
+    ```bash
+    source scripts/metrics_config.sh
+    ```
+
+    ### Step 2: Run evaluation
+
+    ```bash
+    python src/metrics/evaluation.py \
+      --predicted-sql "SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC LIMIT 10;" \
+      --ground-truth-sql "SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC LIMIT 10;"
+    ```
+
+    The script prints the metrics dict and latency to stdout, and optionally writes a timestamped JSON log under `LOGS_DIR_PATH` when `ENABLE_LOG=true`.
+  </Tab>
+
+  <Tab title="Python API">
+    ## Python API
+
+    Import `Evaluation` and `EvaluationTechnique` directly for use in scripts or notebooks.
+
+    ```python
+    from src.metrics.evaluation import Evaluation, EvaluationTechnique
+    from src.core.database.database_handler import DBMS
+    from src.core.model_manager import OpenAIModel
+
+    config = {
+        "evaluation_technique": EvaluationTechnique.SEMANTIC_COLUMN_AND_PARTIAL_CELL,
+        "db_params": {
+            "dbms": DBMS.SQLITE,
+            "db_path": "data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite",
+        },
+        "penalize_extra_pred_cols": True,
+        "embedding_model": OpenAIModel.TEXT_EMBEDDING_3_SMALL,
+        "logs_dir_path": "data/evaluation_outputs/",
+    }
+
+    predicted_sql = "SELECT T3.Phone, T3.City FROM satscores T1 JOIN schools T3 ON T1.cds = T3.CDSCode ORDER BY (T1.NumGE1500 * 1.0 / T1.NumTstTakr) DESC LIMIT 10;"
+    ground_truth_sql = "SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC LIMIT 10;"
+
+    evaluator = Evaluation(config)
+    results = evaluator.run_evaluation(predicted_sql, ground_truth_sql, log=True)
+
+    print(f"Metrics: {results['metrics']}")
+    print(f"Latency: {results['latency']}")
+    ```
+  </Tab>
+</Tabs>
+
+## Configuration options
+
+<ParamField path="evaluation_technique" type="EvaluationTechnique" required>
+  The evaluation strategy to apply. See the table below for available options and which metrics each produces.
+</ParamField>
+
+<ParamField path="db_params" type="object" required>
+  Database connection parameters. Must contain:
+  - `dbms` — a `DBMS` enum value (`DBMS.SQLITE` or `DBMS.DUCKDB`)
+  - `db_path` — path to the database file
+</ParamField>
+
+<ParamField path="penalize_extra_pred_cols" type="boolean" default="true">
+  When `true`, columns present in the predicted result but absent from the ground truth reduce the precision score. Has no effect for `EXECUTION_ACCURACY` or `NO_COLUMN_AND_PARTIAL_CELL`.
+</ParamField>
+
+<ParamField path="embedding_model" type="OpenAIModel" default="OpenAIModel.TEXT_EMBEDDING_3_SMALL">
+  The OpenAI embedding model used to compute column-name similarity in semantic techniques. Required when using any `SEMANTIC_*` or `UNIFIED_*` evaluation technique.
+</ParamField>
+
+<ParamField path="logs_dir_path" type="string" required>
+  Directory where evaluation logs are written when `log=True` is passed to `run_evaluation()`. A subdirectory named after the technique is created automatically.
+</ParamField>
+
+## Evaluation techniques
+
+| Technique | Enum value | EX | EXP | EXR | F1 |
+|---|---|:---:|:---:|:---:|:---:|
+| Execution Accuracy | `EXECUTION_ACCURACY` | ✓ | | | |
+| Exact Column & Exact Cell | `EXACT_COLUMN_AND_EXACT_CELL` | ✓ | ✓ | ✓ | ✓ |
+| Exact Column & Partial Cell | `EXACT_COLUMN_AND_PARTIAL_CELL` | ✓ | ✓ | ✓ | ✓ |
+| Semantic Column & Exact Cell | `SEMANTIC_COLUMN_AND_EXACT_CELL` | ✓ | ✓ | ✓ | ✓ |
+| Semantic Column & Partial Cell | `SEMANTIC_COLUMN_AND_PARTIAL_CELL` | ✓ | ✓ | ✓ | ✓ |
+| No Column & Partial Cell | `NO_COLUMN_AND_PARTIAL_CELL` | ✓ | ✓ | ✓ | ✓ |
+| Unified Column & Semantic Row | `UNIFIED_COLUMN_AND_SEMANTIC_ROW` | ✓ | ✓ | ✓ | ✓ |
+
+## Interpreting results
+
+`run_evaluation()` returns a dict with at least a `metrics` key and a `latency` key:
+
+```python
+{
+    "metrics": {
+        "EX": 0,        # 1 if result sets match exactly, else 0
+        "EXP": 0.75,    # fraction of predicted cells that are correct
+        "EXR": 1.0,     # fraction of ground-truth cells recovered
+        "F1": 0.857,    # harmonic mean of EXP and EXR
+    },
+    "latency": 0.42,    # seconds taken to run the evaluation
+    ...
+}
+```
+
+- **EX = 1** means the predicted result set is identical to the ground truth. All other metrics are redundant in this case.
+- **High EXR, low EXP** indicates the predicted query returns the right data but includes extra columns or rows.
+- **High EXP, low EXR** indicates the predicted query is precise but misses part of the required output.
+- **F1** balances the two; use it when neither over-prediction nor under-prediction is preferable.
+
+<Warning>
+  Techniques with `SEMANTIC_COLUMN` or `UNIFIED_COLUMN` in their name call the OpenAI embeddings API to measure column-name similarity. These require `OPENAI_API_KEY` to be set and will incur API costs.
+</Warning>
+
+## Log file structure
+
+When `log=True`, a JSON file is written to `<logs_dir_path>/<technique>/evaluation-<timestamp>.json`. The file contains the full evaluation context including the metrics dict, SQL inputs, executed result sets, and the evaluation timestamp.

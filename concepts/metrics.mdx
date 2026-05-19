@@ -1,0 +1,163 @@
+---
+title: "Fine-grained execution metrics: EXP, EXR, and F1"
+description: "SQLMorph defines Execution Precision, Execution Recall, and F1 to replace binary EX with metrics that distinguish over-prediction from under-prediction."
+---
+
+Standard Text-to-SQL benchmarks measure **Execution Accuracy (EX)**: a predicted SQL query is marked correct if and only if its result set is an exact match to the ground truth. This binary measure collapses two very different failure modes — returning too many rows and returning too few — into the same score of zero. SQLMorph addresses this by introducing **Execution Precision (EXP)**, **Execution Recall (EXR)**, and their harmonic mean **F1**, which quantify how much of the predicted result was correct and how much of the ground truth was recovered. These metrics, combined with seven configurable evaluation techniques, enable fine-grained analysis that reveals differences across systems that EX cannot.
+
+## Metric definitions
+
+<AccordionGroup>
+  <Accordion title="EX — Execution Accuracy">
+    **Binary match of result sets.** EX is 1 if the set of rows returned by the predicted SQL exactly matches the set of rows returned by the ground-truth SQL; otherwise it is 0. This is the standard BIRD benchmark metric.
+
+    ```
+    EX = 1  if  set(predicted_rows) == set(ground_truth_rows)
+    EX = 0  otherwise
+    ```
+
+    EX is computed by `execution_accuracy.run_evaluation_pipeline` in `src/metrics/metrics/execution_accuracy.py`. It executes both queries against the live database using `DatabaseHandler` and compares the row sets directly.
+  </Accordion>
+  <Accordion title="EXP — Execution Precision">
+    **Fraction of predicted rows that are correct.** EXP measures over-prediction: if the system returns extra rows beyond what the ground truth specifies, EXP penalises that surplus. A system that always returns all rows in the table would have EXP near zero on most queries.
+
+    ```
+    EXP = |predicted_rows ∩ ground_truth_rows| / |predicted_rows|
+    ```
+  </Accordion>
+  <Accordion title="EXR — Execution Recall">
+    **Fraction of ground-truth rows that are recovered.** EXR measures under-prediction: if the system misses rows that the ground truth requires, EXR penalises the gap. A system that always returns an empty result set would have EXR of zero.
+
+    ```
+    EXR = |predicted_rows ∩ ground_truth_rows| / |ground_truth_rows|
+    ```
+  </Accordion>
+  <Accordion title="F1 — harmonic mean of EXP and EXR">
+    **Balanced measure of precision and recall.** F1 combines EXP and EXR into a single score that penalises both over- and under-prediction. It reaches 1 only when both EXP and EXR are 1.
+
+    ```
+    F1 = 2 × (EXP × EXR) / (EXP + EXR)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Evaluation techniques
+
+SQLMorph provides seven evaluation techniques via the `EvaluationTechnique` enum in `src/metrics/evaluation.py`. Each technique defines a different strategy for matching columns and cells between the predicted and ground-truth result sets, offering a spectrum from strict exact matching to semantic similarity.
+
+<Tabs>
+  <Tab title="Exact matching">
+    These techniques use strict string equality for both column names and cell values. No embeddings or external models are required.
+
+    | Technique | Column matching | Cell matching |
+    |---|---|---|
+    | `EXECUTION_ACCURACY` | N/A | Binary set equality (EX only) |
+    | `EXACT_COLUMN_AND_EXACT_CELL` | Exact string match | Exact string match |
+    | `EXACT_COLUMN_AND_PARTIAL_CELL` | Exact string match | Partial (substring) match |
+    | `NO_COLUMN_AND_PARTIAL_CELL` | Ignored | Partial (substring) match |
+
+    Use these techniques when you want fast, deterministic evaluation with no API calls. `EXECUTION_ACCURACY` is the standard BIRD baseline. `EXACT_COLUMN_AND_EXACT_CELL` is the strictest relaxed variant. `NO_COLUMN_AND_PARTIAL_CELL` is the most permissive exact technique — useful when predicted queries return equivalent data under different column aliases.
+  </Tab>
+  <Tab title="Semantic matching">
+    These techniques use OpenAI embedding models to compare columns or rows semantically. They require an `OPENAI_API_KEY` and an `embedding_model` in the configuration.
+
+    | Technique | Column matching | Cell matching |
+    |---|---|---|
+    | `SEMANTIC_COLUMN_AND_EXACT_CELL` | Embedding similarity | Exact string match |
+    | `SEMANTIC_COLUMN_AND_PARTIAL_CELL` | Embedding similarity | Partial (substring) match |
+    | `UNIFIED_COLUMN_AND_SEMANTIC_ROW` | Embedding similarity | Embedding similarity (row-level) |
+
+    Use semantic techniques when the predicted SQL may return semantically equivalent columns under different names (e.g., `school_name` vs `name_of_school`). `UNIFIED_COLUMN_AND_SEMANTIC_ROW` is the most flexible technique, matching entire rows by semantic similarity rather than exact cell values.
+
+    <Info>
+      Semantic techniques call the OpenAI Embeddings API for each evaluation. Use `OpenAIModel.TEXT_EMBEDDING_3_SMALL` for cost-efficient evaluation or `OpenAIModel.TEXT_EMBEDDING_3_LARGE` for higher accuracy.
+    </Info>
+  </Tab>
+</Tabs>
+
+## Using the evaluation API
+
+The `Evaluation` class in `src/metrics/evaluation.py` is the primary entry point for programmatic evaluation. Instantiate it with a configuration dictionary, then call `run_evaluation` with the predicted and ground-truth SQL strings.
+
+### Basic example (exact matching, no API key required)
+
+```python
+from src.metrics.evaluation import Evaluation, EvaluationTechnique
+from src.core.database.database_handler import DBMS
+
+config = {
+    "evaluation_technique": EvaluationTechnique.EXACT_COLUMN_AND_PARTIAL_CELL,
+    "db_params": {
+        "dbms": DBMS.SQLITE,
+        "db_path": "data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite",
+    },
+    "penalize_extra_pred_cols": True,
+    "embedding_model": None,
+    "logs_dir_path": "data/evaluation_outputs/",
+}
+
+predicted_sql = "SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC LIMIT 10;"
+ground_truth_sql = "SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC LIMIT 10;"
+
+evaluator = Evaluation(config)
+results = evaluator.run_evaluation(predicted_sql, ground_truth_sql, log=True)
+print(results["metrics"])
+```
+
+### Semantic evaluation example (requires OpenAI API key)
+
+```python
+from src.metrics.evaluation import Evaluation, EvaluationTechnique
+from src.core.database.database_handler import DBMS
+from src.core.model_manager import OpenAIModel
+
+config = {
+    "evaluation_technique": EvaluationTechnique.SEMANTIC_COLUMN_AND_PARTIAL_CELL,
+    "db_params": {
+        "dbms": DBMS.SQLITE,
+        "db_path": "data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite",
+    },
+    "penalize_extra_pred_cols": True,
+    "embedding_model": OpenAIModel.TEXT_EMBEDDING_3_SMALL,
+    "logs_dir_path": "data/evaluation_outputs/",
+}
+
+evaluator = Evaluation(config)
+results = evaluator.run_evaluation(predicted_sql, ground_truth_sql, log=True)
+print(f"Metrics: {results['metrics']}, Latency: {results['latency']}")
+```
+
+### CLI usage
+
+For one-off evaluations, use the CLI after sourcing the configuration script:
+
+```bash
+# Configure settings
+source scripts/metrics_config.sh
+
+# Run evaluation
+python src/metrics/evaluation.py \
+  --predicted-sql "SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds LIMIT 10;" \
+  --ground-truth-sql "SELECT T1.Phone FROM schools AS T1 INNER JOIN satscores AS T2 ON T1.CDSCode = T2.cds ORDER BY CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr DESC LIMIT 10;"
+```
+
+## Choosing the right technique
+
+<AccordionGroup>
+  <Accordion title="When should I use EXECUTION_ACCURACY?">
+    Use `EXECUTION_ACCURACY` when you want a direct comparison with standard BIRD benchmark scores. It produces only EX (binary) and no EXP/EXR/F1. It is the fastest technique because it performs a single set comparison with no column alignment.
+  </Accordion>
+  <Accordion title="When should I use semantic techniques?">
+    Use semantic techniques (`SEMANTIC_COLUMN_AND_EXACT_CELL`, `SEMANTIC_COLUMN_AND_PARTIAL_CELL`, or `UNIFIED_COLUMN_AND_SEMANTIC_ROW`) when your Text-to-SQL system may return columns under different aliases or when the ground-truth SQL and predicted SQL express the same data with different column names. Semantic matching is more forgiving of surface-level naming differences while still penalising incorrect data.
+  </Accordion>
+  <Accordion title="What does penalize_extra_pred_cols do?">
+    When `penalize_extra_pred_cols` is `True`, extra columns in the predicted result that are not in the ground truth reduce EXP. This penalises over-specification — returning more information than requested. Set it to `False` if you want to reward systems that return correct data even when they include additional columns.
+  </Accordion>
+  <Accordion title="Where are evaluation logs saved?">
+    When `log=True` is passed to `run_evaluation`, the full evaluation context (metrics, latency, predicted and ground-truth rows, and a timestamp) is serialised to a JSON file under `logs_dir_path/<technique_name>/evaluation-<timestamp>.json`. Each technique has its own subdirectory, making it easy to compare runs across techniques.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The `penalize_extra_pred_cols` parameter is named `penalize_extra_columns` in the METRICS.md documentation but is `penalize_extra_pred_cols` in the actual `Evaluation` class config dictionary. Use `penalize_extra_pred_cols` in your code.
+</Note>

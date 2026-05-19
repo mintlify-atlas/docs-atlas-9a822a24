@@ -1,0 +1,291 @@
+---
+title: "ModelManager: create OpenAI, Ollama, HuggingFace models"
+description: "Factory API for creating OpenAI, Ollama, and HuggingFace model clients in SQLMorph, with enum values, completion calls, and compose_chat_messages."
+---
+
+`ModelManager` is a factory class that returns a ready-to-use model object for whichever LLM provider you configure. Internally it maps a combination of `ModelProvider` and `ModelType` to the appropriate client class (`OpenAIChatCompletion`, `OllamaChatCompletion`, `HuggingFaceChatCompletion`, and their embedding counterparts), constructs it with the supplied credentials, and returns it. The returned object exposes a uniform `get_chat_completion()` or `get_embedding()` method so the rest of SQLMorph can switch providers without changing call sites.
+
+## `ModelManager.create_model()`
+
+The single entry point for obtaining a model instance.
+
+```python
+from src.core.model_manager import ModelManager, ModelProvider, ModelType, OpenAIModel
+
+model = ModelManager.create_model(
+    model_provider=ModelProvider.OPENAI,
+    model_type=ModelType.COMPLETION,
+    model_name=OpenAIModel.GPT_4O,
+    openai_api_key="sk-...",
+)
+```
+
+<ParamField path="model_provider" type="ModelProvider" required>
+  Selects the LLM backend. Must be a member of the `ModelProvider` enum. Raises `ValueError` for unsupported values.
+</ParamField>
+
+<ParamField path="model_type" type="ModelType" required>
+  Selects whether to create a chat-completion or embedding client. Must be a member of the `ModelType` enum.
+</ParamField>
+
+<ParamField path="model_name" type="OpenAIModel | OllamaModel | HuggingFaceModel | str" required>
+  The specific model to use. Pass an enum member appropriate for the chosen provider (e.g., `OpenAIModel.GPT_4O` for OpenAI, `OllamaModel.LLAM3_1_8B` for Ollama). The enum's `.value` property is used as the model identifier string.
+</ParamField>
+
+<ParamField path="openai_api_key" type="string | None" default="None">
+  Your OpenAI API key. Required when `model_provider=ModelProvider.OPENAI`. Ignored for Ollama and HuggingFace.
+</ParamField>
+
+<ParamField path="portkey_api_key" type="string | None" default="None">
+  Optional Portkey gateway API key. When set, the OpenAI client routes requests through the Portkey gateway (`PORTKEY_GATEWAY_URL`) using the provided credentials.
+</ParamField>
+
+<ParamField path="portkey_config_id" type="string | None" default="None">
+  Optional Portkey configuration ID. Used together with `portkey_api_key` to select a specific Portkey config profile.
+</ParamField>
+
+**Return value**
+
+Returns an instance of one of the following classes depending on the `model_provider` and `model_type` combination:
+
+| Provider | Type | Returned class |
+|---|---|---|
+| `OPENAI` | `COMPLETION` | `OpenAIChatCompletion` |
+| `OPENAI` | `EMBEDDING` | `OpenAIEmbeddings` |
+| `OLLAMA` | `COMPLETION` | `OllamaChatCompletion` |
+| `OLLAMA` | `EMBEDDING` | `OllamaEmbeddings` |
+| `HUGGINGFACE` | `COMPLETION` | `HuggingFaceChatCompletion` |
+| `HUGGINGFACE` | `EMBEDDING` | `HuggingFaceEmbeddings` |
+
+---
+
+## Enum reference
+
+### `ModelProvider`
+
+```python
+from src.core.model_manager import ModelProvider
+
+ModelProvider.OPENAI       # "openai"
+ModelProvider.OLLAMA       # "ollama"
+ModelProvider.HUGGINGFACE  # "huggingface"
+```
+
+### `ModelType`
+
+```python
+from src.core.model_manager import ModelProvider, ModelType
+
+ModelType.COMPLETION  # "completion" — chat/text generation
+ModelType.EMBEDDING   # "embedding"  — vector embeddings
+```
+
+### `OpenAIModel`
+
+```python
+from src.core.model_manager import OpenAIModel
+
+# Chat completion models
+OpenAIModel.GPT_52          # "gpt-5.2"
+OpenAIModel.O1_PREVIEW      # "o1-preview"
+OpenAIModel.O1_MINI         # "o1-mini"
+OpenAIModel.GPT_4O          # "gpt-4o"           (default in TQA and JQE NL generation)
+OpenAIModel.GPT_4O_MINI     # "gpt-4o-mini"
+OpenAIModel.GPT_4_TURBO     # "gpt-4-turbo"
+OpenAIModel.GPT_4           # "gpt-4"
+OpenAIModel.GPT_3_5_TURBO   # "gpt-3.5-turbo"
+
+# Embedding models
+OpenAIModel.TEXT_EMBEDDING_3_LARGE  # "text-embedding-3-large"
+OpenAIModel.TEXT_EMBEDDING_3_SMALL  # "text-embedding-3-small"
+OpenAIModel.TEXT_EMBEDDING_ADA_002  # "text-embedding-ada-002"
+```
+
+### `OllamaModel`
+
+```python
+from src.core.model_manager import OllamaModel
+
+# Chat completion models
+OllamaModel.LLAM3_1_8B                   # "llama3.1:8b"                  (context: 128 256)
+OllamaModel.LLAM3_1_8B_INSTRUCT_Q4_0    # "llama3.1:8b-instruct-q4_0"   (context: 128 256)
+OllamaModel.LLAM3_1_8B_INSTRUCT_Q8_0    # "llama3.1:8b-instruct-q8_0"   (context: 128 256)
+OllamaModel.LLAM3_1_70B                  # "llama3.1:70b"                 (context: 128 256)
+OllamaModel.MISTRAL_7B                   # "mistral:7b"
+
+# Embedding models
+OllamaModel.NOMIC_EMBED_TEXT_LATEST      # "nomic-embed-text:latest"
+OllamaModel.NOMIC_EMBED_TEXT_V1_5        # "nomic-embed-text:v1.5"
+OllamaModel.MXBAI_EMBED_LARGE_LATEST     # "mxbai-embed-large:latest"
+OllamaModel.MXBAI_EMBED_LARGE_335M      # "mxbai-embed-large:335m"
+```
+
+Each `OllamaModel` member stores a `(model_string, num_ctx)` tuple. Call `.get_num_ctx()` to retrieve the context-window size; embedding models return `None`.
+
+---
+
+## Using the returned model
+
+### `get_chat_completion()`
+
+All completion model objects returned by `ModelManager.create_model()` expose a `get_chat_completion()` method. The OpenAI and Ollama signatures differ slightly.
+
+<Tabs>
+  <Tab title="OpenAI">
+    ```python
+    response = model.get_chat_completion(
+        messages=messages,          # list[dict] from compose_chat_messages()
+        seed=42,                    # optional — for deterministic outputs
+        temperature=0,              # optional
+        max_tokens=2000,            # optional
+        top_p=1,                    # optional
+        frequency_penalty=0,        # optional
+        presence_penalty=0,         # optional
+        # Also accepts: logit_bias, logprobs, top_logprobs, n, response_format,
+        #               stop, stream, tools, tool_choice, user
+    )
+    ```
+
+    Returns a dict:
+
+    <ResponseField name="completion_content" type="list[str]">
+      One string per completion choice (`response.choices[n].message.content`). Typically a list of length 1.
+    </ResponseField>
+    <ResponseField name="completion_latency" type="float">
+      Wall-clock time in seconds for the API call.
+    </ResponseField>
+    <ResponseField name="num_input_tokens" type="integer">
+      Prompt token count from `response.usage.prompt_tokens`.
+    </ResponseField>
+    <ResponseField name="num_output_tokens" type="integer">
+      Completion token count from `response.usage.completion_tokens`.
+    </ResponseField>
+  </Tab>
+  <Tab title="Ollama">
+    ```python
+    response = model.get_chat_completion(
+        messages=messages,      # list[dict] from compose_chat_messages()
+        temperature=0.7,        # optional
+        n=1,                    # optional — number of completions
+    )
+    ```
+
+    Returns a dict with the same four keys as the OpenAI response (`completion_content`, `completion_latency`, `num_input_tokens`, `num_output_tokens`). Token counts are summed across `n` calls.
+  </Tab>
+</Tabs>
+
+---
+
+## `compose_chat_messages()` utility
+
+Builds the `messages` list expected by the Chat Completions API from plain Python strings.
+
+```python
+from src.core.model_manager.utils import compose_chat_messages
+
+messages = compose_chat_messages(
+    user_messages=["Rewrite this question to use schema names."],
+    assistant_messages=None,      # optional — interleaved assistant turns
+    system_message="You are a SQL expert.",  # optional
+)
+# [
+#   {"role": "system", "content": "You are a SQL expert."},
+#   {"role": "user",   "content": "Rewrite this question to use schema names."},
+# ]
+```
+
+<ParamField path="user_messages" type="list[str]" required>
+  One string per user turn. The list length determines how many turns are added.
+</ParamField>
+
+<ParamField path="assistant_messages" type="list[str] | None" default="None">
+  Optional list of assistant turn strings, one per user message. When provided, each assistant message is interleaved immediately after its corresponding user message to construct few-shot conversation history. Must be the same length as `user_messages` if supplied.
+</ParamField>
+
+<ParamField path="system_message" type="string | None" default="None">
+  Optional system prompt prepended to the message list.
+</ParamField>
+
+Returns `list[dict[str, str]]` — a message list ready to pass directly to `get_chat_completion()`.
+
+---
+
+## Usage examples
+
+<CodeGroup>
+
+```python OpenAI completion
+import os
+from src.core.model_manager import ModelManager, ModelProvider, ModelType, OpenAIModel
+from src.core.model_manager.utils import compose_chat_messages
+
+model = ModelManager.create_model(
+    model_provider=ModelProvider.OPENAI,
+    model_type=ModelType.COMPLETION,
+    model_name=OpenAIModel.GPT_4O,
+    openai_api_key=os.environ["OPENAI_API_KEY"],
+)
+
+messages = compose_chat_messages(
+    user_messages=["Translate this SQL to a natural-language question."],
+    system_message="You are a helpful Text-to-SQL assistant.",
+)
+
+response = model.get_chat_completion(messages=messages, seed=42, temperature=0)
+print(response["completion_content"][0])
+```
+
+```python Ollama completion
+from src.core.model_manager import ModelManager, ModelProvider, ModelType, OllamaModel
+from src.core.model_manager.utils import compose_chat_messages
+
+model = ModelManager.create_model(
+    model_provider=ModelProvider.OLLAMA,
+    model_type=ModelType.COMPLETION,
+    model_name=OllamaModel.LLAM3_1_8B,
+)
+
+messages = compose_chat_messages(
+    user_messages=["Write a SQL query that counts rows in the account table."],
+)
+
+response = model.get_chat_completion(messages=messages, temperature=0.2)
+print(response["completion_content"][0])
+```
+
+```python OpenAI embeddings
+import os
+from src.core.model_manager import ModelManager, ModelProvider, ModelType, OpenAIModel
+
+model = ModelManager.create_model(
+    model_provider=ModelProvider.OPENAI,
+    model_type=ModelType.EMBEDDING,
+    model_name=OpenAIModel.TEXT_EMBEDDING_3_SMALL,
+    openai_api_key=os.environ["OPENAI_API_KEY"],
+)
+
+vector = model.get_embedding("How many accounts are in Prague?")
+print(len(vector))  # 1536 for text-embedding-3-small
+```
+
+```python Few-shot messages
+from src.core.model_manager.utils import compose_chat_messages
+
+messages = compose_chat_messages(
+    user_messages=[
+        "Original: How many accounts? Schema: account → acct. Rewrite.",
+        "Original: Which district has most loans? Schema: district → dist. Rewrite.",
+    ],
+    assistant_messages=[
+        '{"updated_question": "How many acct rows?", "updated_evidence": ""}',
+        None,  # no assistant turn for the last message (it is the live query)
+    ],
+    system_message="Rewrite questions using obfuscated schema names. Return JSON.",
+)
+```
+
+</CodeGroup>
+
+<Note>
+Set `OPENAI_API_KEY` in your environment or pass it explicitly to `create_model()`. The TQA and JQE NL generation modules read it via `os.getenv("OPENAI_API_KEY")` and forward it through `create_model()`. Ollama requires a locally running Ollama server; no API key is needed.
+</Note>

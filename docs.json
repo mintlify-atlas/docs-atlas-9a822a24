@@ -1,126 +1,95 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "SQLMorph",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#d3fa63",
+    "light": "#8c9454",
+    "dark": "#2e1e3c"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/6f9619a7-93dc-47b4-983b-b41b42798fda.png",
+  "logo": {
+    "light": "https://media.brand.dev/5a53e869-cde5-4b4c-a503-083950175d4c.svg",
+    "dark": "https://media.brand.dev/5a53e869-cde5-4b4c-a503-083950175d4c.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/dais-polymtl/sqlmorph"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/dais-polymtl/sqlmorph"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/overview",
+              "concepts/join-query-expansion",
+              "concepts/textual-query-augmentation",
+              "concepts/metrics"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Guides",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/components",
-              "essentials/reusable-snippets"
+              "guides/jqe-usage",
+              "guides/tqa-usage",
+              "guides/metrics-usage",
+              "guides/experiments"
             ]
           },
           {
-            "group": "Agent ready",
+            "group": "Configuration",
             "pages": [
-              "agent-ready/prompt",
-              "agent-ready/visibility",
-              "agent-ready/contextual",
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "configuration/environment",
+              "configuration/database-backends",
+              "configuration/model-providers"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Evaluation",
             "pages": [
-              "api-reference/introduction"
+              "api/evaluation",
+              "api/evaluation-techniques",
+              "api/metrics-reference"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Query Mutation",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/jqe-api",
+              "api/tqa-api"
+            ]
+          },
+          {
+            "group": "Core Utilities",
+            "pages": [
+              "api/database-handler",
+              "api/model-manager"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

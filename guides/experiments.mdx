@@ -1,0 +1,127 @@
+---
+title: "Reproducing the SQLMorph experiments"
+description: "Reproduce all JQE and metrics experiments from the SQLMorph paper: connectivity, cyclicity, system performance on BIRD, and controlled error sensitivity."
+---
+
+The SQLMorph paper evaluates three state-of-the-art Text-to-SQL systems — CHESS, DIN-SQL, and MAC-SQL — on the BIRD dev set using both Join Query Expansion (JQE) and the relaxed evaluation metrics framework. This page shows you how to reproduce every experiment. System predictions are already included in the repository under `data/experiments/<system>/`, so you do not need to re-run inference; the experiment scripts read those outputs directly.
+
+## Systems evaluated
+
+| System | Output data location |
+|---|---|
+| CHESS | `data/experiments/CHESS/` |
+| DIN-SQL | `data/experiments/DIN-SQL/` |
+| MAC-SQL | `data/experiments/MAC-SQL/` |
+
+## JQE experiments
+
+### Experiments 1 and 2 — Connectivity and cyclicity
+
+These experiments measure the structural properties of the expansion set versus the original BIRD dev queries. The full set of expansion graphs is stored in:
+
+```
+data/rule_outputs/jq_augmentation/aug_log/augmentation_log.pickle
+```
+
+Run the following command to compute connectivity and cyclicity statistics:
+
+```bash
+python experiments/join_query_expansion/join_stats.py
+```
+
+Two CSV files are generated under `experiments/augmentation/`:
+
+| Output file | Contents |
+|---|---|
+| `augmented_join_details.csv` | Average degree and cycle presence for each augmented query |
+| `original_join_details.csv` | Average degree and cycle presence for each original BIRD dev query |
+
+### Experiment 3 — Systems performance on unique expansions
+
+CHESS, DIN-SQL, and MAC-SQL were evaluated on 58 unique expansion queries derived from the BIRD dev set. To compute each system's scores on the original queries, the unique expansions, and the Delta EX metric (EX_expanded − EX_original):
+
+```bash
+python experiments/join_query_expansion/delta_ex.py
+```
+
+This writes two types of CSV files under `data/experiments/augmentation/`:
+
+| Output file | Contents |
+|---|---|
+| `<system>_aug_mode_results.csv` | Per-query results on the unique expansions |
+| `<system>_dev_mode_results.csv` | Per-query results on the original dev queries |
+| `<system>_delta_ex_results.csv` | Delta EX value for each unique expansion query |
+
+### Experiment 3 — Systems performance on sampled expansions
+
+The same three systems were also evaluated on 408 queries sampled from the full expansion set. To generate the results file `data/experiments/join_sampling_results.csv`:
+
+```bash
+python experiments/join_query_expansion/join_sampling_results.py
+```
+
+<Note>
+  Both Experiment 3 variants read system prediction files from `data/experiments/<system>/`. Ensure the data directory was downloaded correctly before running these scripts.
+</Note>
+
+## Metrics experiments
+
+The metrics experiments demonstrate how relaxed evaluation metrics reveal differences that binary EX misses. Each experiment is driven by a dedicated shell script that sources its own configuration.
+
+### Experiment 1 — Table shape sensitivity
+
+Tests whether evaluation scores change when the predicted query returns the correct values but in a differently shaped result table (e.g. extra columns or transposed rows):
+
+```bash
+source scripts/run_metrics_experiment1.sh
+```
+
+### Experiment 2a — Single error mutants
+
+Evaluates the sensitivity of each metric to single controlled errors injected into otherwise correct SQL queries:
+
+```bash
+source scripts/run_metrics_experiment2_1.sh
+```
+
+### Experiment 2b — Multi error mutants
+
+Extends the sensitivity analysis to queries with multiple simultaneous errors:
+
+```bash
+source scripts/run_metrics_experiment2_2.sh
+```
+
+### Experiment 3 — System-level comparison on shared failures
+
+Compares CHESS, DIN-SQL, and MAC-SQL on the subset of BIRD dev questions where all three systems fail under EX, using relaxed metrics to distinguish which system comes closest to the correct answer:
+
+```bash
+source scripts/run_metrics_experiment3.sh
+```
+
+<Tip>
+  Experiments that use semantic evaluation techniques require `OPENAI_API_KEY` to be exported in your shell. Check the relevant config script to see which technique is active before running.
+</Tip>
+
+## Experiment directory structure
+
+```
+experiments/
+├── join_query_expansion/
+│   ├── join_stats.py              # Experiments 1 & 2 (connectivity/cyclicity)
+│   ├── delta_ex.py                # Experiment 3 (unique expansions)
+│   ├── join_sampling_results.py   # Experiment 3 (sampled expansions)
+│   ├── join_sampling.py
+│   ├── delta_ex_lt.py
+│   ├── human_scores.py
+│   ├── lt_stats.py
+│   ├── plots.py
+│   ├── utils.py
+│   └── analysis/
+├── metrics/
+│   ├── table_shape_sensitivity/   # Experiment 1
+│   ├── controlled_error_sensitivity/  # Experiments 2a & 2b
+│   └── system_level_comparison/   # Experiment 3
+└── textual_query_augmentation/
+```

@@ -1,0 +1,124 @@
+---
+title: "Join Query Expansion (JQE) concepts"
+description: "JQE systematically adds valid joins to existing BIRD benchmark queries, increasing structural complexity to expose accuracy degradation in Text-to-SQL systems."
+---
+
+Join Query Expansion takes an existing SQL query from the BIRD benchmark and generates a family of new queries by adding tables from the database schema that are not already present in the original query. Each addition is made through a semantically valid join, so the expanded queries are executable and meaningful. The goal is to probe how well a Text-to-SQL system handles structural complexity — and specifically how its accuracy changes as join depth increases. Applied to CHESS, DIN-SQL, and MAC-SQL, JQE demonstrated clear accuracy degradation that standard benchmarks could not reveal.
+
+## How JQE builds expanded queries
+
+<Steps>
+  <Step title="Represent the schema as a graph">
+    JQE loads the target BIRD database schema as a **NetworkX directed graph**. Each node represents a table, and each edge represents a foreign-key relationship annotated with the join condition (e.g., `account.district_id = district.district_id`). This graph is pre-computed and stored as a `.pkl` file alongside each supported database.
+  </Step>
+  <Step title="Extract the query join graph (JQ graph)">
+    The original BIRD query is also represented as a subgraph — its **join query graph (JQ graph)** — containing only the tables and joins that appear in that specific query. This subgraph is the starting point for expansion.
+  </Step>
+  <Step title="Find candidate expansions">
+    The `find_candidate_expansions` function identifies tables in the schema graph that are **not yet in the JQ graph** but are connected to at least one table that is. For each such candidate table, it enumerates all valid join conditions using the edge labels from the schema graph. The result is an ordered list of candidate expansion combinations, each specifying a new table and the join conditions that attach it to the existing query.
+  </Step>
+  <Step title="Check for redundant cycles">
+    Before accepting an expansion, JQE checks whether the newly added edges create a **redundant cycle** — a cycle where the join keys are already fully implied by existing joins in the graph. Redundant cycles are discarded via `check_cycle_redundancy`, which uses `nx.simple_cycles` to enumerate cycles and inspect whether all join keys in the closing edge are already present in other cycle edges.
+  </Step>
+  <Step title="Deduplicate with isomorphism checks">
+    JQE uses `nx.is_isomorphic` to compare each expanded graph against all previously accepted graphs and all original BIRD dev-set graphs. Expansions whose graph structure is isomorphic to an already-accepted one are placed in the **discarded** bucket. A configurable `max_isomorphic` parameter allows a small number of near-duplicate structures (default: 5) before strict deduplication kicks in.
+  </Step>
+  <Step title="Generate SQL and NL for each expansion">
+    Accepted expansions are converted to executable SQL using `extend_old_query` (query-first mode) or `translate_graph_into_query` (graph-first mode). In query-first mode, the original SQL is extended with additional JOIN clauses. The expanded SQL is then executed against the live SQLite database to confirm validity. GPT-4o generates a corresponding NL question for each accepted expansion.
+  </Step>
+</Steps>
+
+## Query-first vs graph-first modes
+
+JQE supports two generation modes, selectable with the `-gf` flag:
+
+<Tabs>
+  <Tab title="Query-first (default)">
+    Extends the **original SQL query** directly by appending new JOIN clauses and updating the WHERE conditions. This mode preserves the original query's structure and adds minimal new SQL constructs. It is the default mode and is recommended for most use cases.
+
+    ```bash
+    python -m src/join_query_expansion/main.py european_football_2 4
+    ```
+  </Tab>
+  <Tab title="Graph-first">
+    Generates an entirely **new SQL query from the extended graph structure**, without starting from the original SQL text. This mode can produce more varied query phrasings and is useful when you want to measure how well a system handles graph-derived query structures.
+
+    ```bash
+    python -m src/join_query_expansion/main.py european_football_2 4 -gf
+    ```
+  </Tab>
+</Tabs>
+
+## Running JQE
+
+The main entry point accepts a database ID and a target number of tables:
+
+```bash
+python -m src/join_query_expansion/main.py <db_id> <num_tables>
+```
+
+- **`db_id`**: one of the 11 supported BIRD development databases (see below)
+- **`num_tables`**: number of tables the expanded query should involve; must be at least `2` and cannot exceed the database-specific maximum stored in `rule_inputs/jq_augmentation/<db_id>:jq_graphs_n_tables.pkl`
+
+**Example** — generate 4-table expansions for the `european_football_2` database:
+
+```bash
+python -m src/join_query_expansion/main.py european_football_2 4
+```
+
+## Supported BIRD databases
+
+JQE supports all 11 databases from the BIRD development set:
+
+<AccordionGroup>
+  <Accordion title="View all 11 supported databases">
+    | Database ID | Domain |
+    |---|---|
+    | `california_schools` | Education |
+    | `card_games` | Games |
+    | `codebase_community` | Software |
+    | `debit_card_specializing` | Finance |
+    | `european_football_2` | Sports |
+    | `financial` | Finance |
+    | `formula_1` | Sports |
+    | `student_club` | Education |
+    | `superhero` | Entertainment |
+    | `thrombosis_prediction` | Healthcare |
+    | `toxicology` | Science |
+  </Accordion>
+</AccordionGroup>
+
+## Output structure
+
+JQE writes its results under `data/rule_outputs/jq_augmentation/`:
+
+```
+data/rule_outputs/jq_augmentation/
+├── filtered/
+│   └── query_first/
+│       ├── <db_id>_<num_tables>t_qf_filtered_aug.json   # augmented queries
+│       ├── <db_id>_<num_tables>t_qf_filtered_ori.json   # original queries
+│       ├── <db_id>_<num_tables>t_qf_filtered_aug.sql
+│       └── <db_id>_<num_tables>t_qf_filtered_ori.sql
+└── discarded/
+    └── query_first/
+        ├── <db_id>_<num_tables>t_qf_discarded_aug.json  # isomorphic duplicates
+        ├── <db_id>_<num_tables>t_qf_discarded_ori.json
+        ├── <db_id>_<num_tables>t_qf_discarded_aug.sql
+        └── <db_id>_<num_tables>t_qf_discarded_ori.sql
+```
+
+- **`filtered/`** — unique expansions that passed isomorphism deduplication; these are the queries used for evaluation
+- **`discarded/`** — expansions that were structurally too similar to existing queries; kept for transparency but excluded from evaluation
+
+<Note>
+  Both `filtered` and `discarded` files come in `_aug` (expanded) and `_ori` (original) variants, so you can always trace an expanded query back to its source entry in the BIRD dev set.
+</Note>
+
+## Key finding: accuracy drops with join depth
+
+When CHESS, DIN-SQL, and MAC-SQL were evaluated on 58 unique expansion queries derived from the BIRD dev set, all three systems showed measurable accuracy degradation compared to their scores on the original pre-expansion queries. The Delta EX metric (EX on expanded queries minus EX on original queries) was consistently negative, with degradation increasing as the number of joins grew. This pattern was consistent across sampled expansions (408 queries) as well, confirming that join complexity is a reliable choke point for exposing structural weaknesses in Text-to-SQL systems.
+
+<Tip>
+  To reproduce these results, run `python experiments/join_query_expansion/delta_ex.py` after evaluating CHESS, DIN-SQL, or MAC-SQL on the filtered expansion queries.
+</Tip>

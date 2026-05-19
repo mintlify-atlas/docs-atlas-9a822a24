@@ -1,0 +1,137 @@
+---
+title: "Database backends: SQLite and DuckDB"
+description: "Configure SQLite or DuckDB as the SQL execution backend in SQLMorph using the DatabaseHandler class, DBMS enum, and connection params dict."
+---
+
+SQLMorph supports two database backends — SQLite and DuckDB — through a `DatabaseHandler` class that abstracts over both. You select a backend with the `DBMS` enum and pass a `connection_params` dict with the path to your database file. The handler instantiates the correct adapter, connects immediately, and exposes a uniform interface for running queries. This design means you can switch backends without changing any evaluation logic.
+
+## The DBMS enum
+
+```python
+from src.core.database.database_handler import DBMS
+
+# Available values
+DBMS.SQLITE   # "sqlite"
+DBMS.DUCKDB   # "duckdb"
+```
+
+## Configuring a backend
+
+Pass `db_params` to your evaluation configuration using the `DBMS` enum and a `db_path` string.
+
+<Tabs>
+  <Tab title="SQLite">
+    ```python
+    from src.core.database.database_handler import DatabaseHandler, DBMS
+
+    db_params = {
+        "dbms": DBMS.SQLITE,
+        "db_path": "data/benchmarks/Bird/dev_databases/california_schools/california_schools.sqlite",
+    }
+
+    handler = DatabaseHandler(
+        dbms=db_params["dbms"],
+        connection_params={"db_path": db_params["db_path"]},
+    )
+    ```
+
+    <Note>
+      The BIRD benchmark ships SQLite databases. The default `DB_PATH` in `scripts/metrics_config.sh` points to the California Schools database in the BIRD dev split.
+    </Note>
+  </Tab>
+  <Tab title="DuckDB">
+    ```python
+    from src.core.database.database_handler import DatabaseHandler, DBMS
+
+    db_params = {
+        "dbms": DBMS.DUCKDB,
+        "db_path": "path/to/database.duckdb",
+    }
+
+    handler = DatabaseHandler(
+        dbms=db_params["dbms"],
+        connection_params={"db_path": db_params["db_path"]},
+    )
+    ```
+  </Tab>
+</Tabs>
+
+You can also drive backend selection from the environment variables set by `scripts/metrics_config.sh`:
+
+```python
+import os
+from src.core.database.database_handler import DatabaseHandler, DBMS
+
+dbms = DBMS[os.environ["DBMS"]]          # "SQLITE" or "DUCKDB"
+db_path = os.environ["DB_PATH"]
+
+handler = DatabaseHandler(
+    dbms=dbms,
+    connection_params={"db_path": db_path},
+)
+```
+
+## DatabaseHandler API
+
+`DatabaseHandler` provides a consistent interface regardless of backend. The constructor connects immediately — you do not need to call `connect_to_database()` manually after instantiation.
+
+<ParamField path="constructor.dbms" type="DBMS" required>
+  A `DBMS` enum member that selects the backend adapter. Raises `ValueError` for unsupported values.
+</ParamField>
+
+<ParamField path="constructor.connection_params" type="dict" required>
+  A dictionary of connection parameters for the chosen backend. Both SQLite and DuckDB require a `db_path` key containing the path to the database file.
+</ParamField>
+
+### Methods
+
+**`connect_to_database()`**
+
+Establishes the database connection by calling `adapter.connect()`. Called automatically by the constructor. Re-call it if you need to reconnect after an error.
+
+```python
+handler.connect_to_database()
+```
+
+**`run_query(query, return_cursor=False)`**
+
+Executes a SQL query through the selected adapter.
+
+- When `return_cursor=False` (default), returns a tuple `(column_names, rows)` where `column_names` is a list of strings and `rows` is a list of tuples.
+- When `return_cursor=True`, returns the raw database cursor for advanced use cases.
+
+```python
+column_names, rows = handler.run_query(
+    "SELECT school, County FROM schools LIMIT 5"
+)
+```
+
+**`is_connection_alive()`**
+
+Runs `SELECT 1` against the adapter and returns `True` if the connection is responsive, `False` otherwise.
+
+```python
+if not handler.is_connection_alive():
+    handler.connect_to_database()
+```
+
+**`close_connection()`**
+
+Closes the underlying adapter connection and releases the file lock.
+
+```python
+handler.close_connection()
+```
+
+## Adapter pattern
+
+`DatabaseHandler` uses an adapter pattern internally. Each backend is implemented as a subclass of `BaseAdapter`:
+
+- `SQLiteAdapter` — wraps Python's built-in `sqlite3` module.
+- `DuckDBAdapter` — wraps the `duckdb` Python package.
+
+Both adapters expose the same three methods (`connect`, `run_query`, `close_connection`) and accept an identical `connection_params` dict with a `db_path` key. You do not interact with adapters directly; `DatabaseHandler` selects and instantiates the correct one based on the `DBMS` value you provide.
+
+<Warning>
+  SQLite databases opened by SQLMorph are opened without the WAL journal mode. Avoid writing to the database file from another process while an evaluation is running.
+</Warning>

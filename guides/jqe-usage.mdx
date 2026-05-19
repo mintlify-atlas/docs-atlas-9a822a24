@@ -1,0 +1,152 @@
+---
+title: "Expand SQL queries with Join Query Expansion"
+description: "Use Join Query Expansion to generate valid, structurally diverse SQL queries by systematically extending existing joins from the BIRD dev set."
+---
+
+Join Query Expansion (JQE) increases the structural complexity of existing SQL queries by adding valid joins drawn from the database schema. Starting from a seed query, JQE enumerates candidate table additions, filters out redundant or isomorphic extensions, and produces paired SQL and natural-language outputs ready for Text-to-SQL evaluation. You control the target database, the number of tables in generated queries, and several sampling parameters that shape the expansion space.
+
+## Prerequisites
+
+Before running JQE, make sure you have:
+
+- An `OPENAI_API_KEY` set in a `.env` file at the project root (GPT-4o generates the natural-language side of each pair).
+- The BIRD dataset downloaded and placed under `data/` in the project root (see step 2 below).
+
+## Full workflow
+
+<Steps>
+  <Step title="Source the configuration">
+    Export the environment variables that tell JQE where to find data and where to write outputs:
+
+    ```bash
+    source scripts/jqe_config.sh
+    ```
+
+    This sets the following variables:
+
+    | Variable | Value |
+    |---|---|
+    | `DATA_FOLDER` | `data` |
+    | `RULE_INPUTS_BASE` | `data/rule_inputs/` |
+    | `GRAPH_DATA_BASE` | `data/graph_data/bird_graphs/pickles` |
+    | `RULE_OUTPUTS_BASE` | `data/rule_outputs/jq_augmentation` |
+  </Step>
+
+  <Step title="Download the data">
+    Download the dataset from [Google Drive](https://drive.google.com/drive/u/0/folders/1CS5YGn_pjBLiGHsNvUdUXP-1EhUpWdVY). Rename the downloaded folder to `data` and place it at the project root:
+
+    ```
+    project-root/
+    └── data/
+    ```
+
+    The `data/` directory contains the BIRD databases, pre-computed join-query graphs, and rule-input pickles required for expansion.
+  </Step>
+
+  <Step title="Run the main expansion script">
+    Pass the database ID and the number of tables you want in the generated queries:
+
+    ```bash
+    python -m src/join_query_expansion/main.py <db_id> <num_tables>
+    ```
+
+    For example, to generate 4-table queries for `european_football_2`:
+
+    ```bash
+    python -m src/join_query_expansion/main.py european_football_2 4
+    ```
+
+    The script loads pre-augmented subgraphs for the chosen database, enumerates valid expansions, executes each candidate query against the database to verify it returns results, generates natural-language questions with GPT-4o, and writes the output files.
+  </Step>
+
+  <Step title="Enable graph-first mode (optional)">
+    By default the script follows a query-first strategy, extending existing queries. To also generate queries translated directly from graph structure, add the `-g` flag:
+
+    ```bash
+    python -m src/join_query_expansion/main.py european_football_2 4 -g true
+    ```
+
+    Graph-first output is written alongside the query-first files (see output structure below).
+  </Step>
+
+  <Step title="Inspect the outputs">
+    All outputs land under `data/rule_outputs/jq_augmentation/`. The directory is organised as follows:
+
+    ```
+    data/rule_outputs/jq_augmentation/
+    ├── filtered/
+    │   └── query_first/
+    │       ├── <db_id>_(<num_tables>)t_qf_filtered_aug.json   # augmented queries
+    │       ├── <db_id>_(<num_tables>)t_qf_filtered_ori.json   # original seed queries
+    │       ├── <db_id>_(<num_tables>)t_qf_filtered_aug.sql
+    │       └── <db_id>_(<num_tables>)t_qf_filtered_ori.sql
+    └── discarded/
+        └── query_first/
+            ├── <db_id>_(<num_tables>)t_qf_discarded_aug.json  # duplicate isomorphics
+            ├── <db_id>_(<num_tables>)t_qf_discarded_ori.json
+            ├── <db_id>_(<num_tables>)t_qf_discarded_aug.sql
+            └── <db_id>_(<num_tables>)t_qf_discarded_ori.sql
+    ```
+
+    - `filtered/` — unique expansions that passed the isomorphism filter.
+    - `discarded/` — queries skipped because they were structurally identical (up to graph isomorphism) to an already-accepted expansion.
+    - `*_aug.json` — the expanded (augmented) SQL and NL pairs.
+    - `*_ori.json` — the original seed queries that were expanded.
+  </Step>
+</Steps>
+
+## CLI arguments
+
+<ParamField path="db_id" type="string" required>
+  ID of the BIRD dev database to expand queries for. Must be one of the 11 supported databases listed below.
+</ParamField>
+
+<ParamField path="num_tables" type="integer" required>
+  Number of tables to include in the generated queries. Must be at least `2` and cannot exceed the maximum pre-computed for the database (stored in `rule_inputs/jq_augmentation/<db_id>/jq_graphs_n_tables.pkl`).
+</ParamField>
+
+<ParamField path="--max_queries" type="integer" default="1000">
+  Maximum number of expanded queries to generate across the entire run. The script stops early if this limit is reached before exhausting all candidate expansions.
+</ParamField>
+
+<ParamField path="--max_isomorphic" type="integer" default="1">
+  Maximum number of structurally isomorphic expansions to retain for any single seed query graph. Expansions beyond this limit are placed in the `discarded/` output.
+</ParamField>
+
+<ParamField path="--sort_asc" type="boolean" default="false">
+  When `true`, sort candidate table additions in ascending order by row count before enumerating expansions. This biases generation toward smaller tables first.
+</ParamField>
+
+<ParamField path="--graph_first" type="boolean" default="false">
+  When `true`, also generate queries translated directly from the extended join graph, in addition to the standard query-first expansions.
+</ParamField>
+
+## Supported databases
+
+JQE works with the following 11 databases from the BIRD dev set:
+
+| Database ID |
+|---|
+| `california_schools` |
+| `card_games` |
+| `codebase_community` |
+| `debit_card_specializing` |
+| `european_football_2` |
+| `financial` |
+| `formula_1` |
+| `student_club` |
+| `superhero` |
+| `thrombosis_prediction` |
+| `toxicology` |
+
+<Note>
+  The `num_tables` upper bound varies per database. Attempting to request more tables than the pre-computed graphs support will cause the script to log an error and exit.
+</Note>
+
+## Example command
+
+```bash
+python -m src/join_query_expansion/main.py european_football_2 4
+```
+
+This generates all valid 4-table query expansions for `european_football_2`, keeping up to 1000 unique expansions (default) and filtering out duplicate isomorphics.

@@ -1,0 +1,57 @@
+---
+title: "SQLMorph architecture and data flow overview"
+description: "SQLMorph combines two query mutation modules with a fine-grained metrics layer for richer, reproducible Text-to-SQL evaluations on BIRD benchmark databases."
+---
+
+SQLMorph addresses a fundamental limitation in Text-to-SQL research: existing benchmarks measure binary pass/fail accuracy on a fixed set of queries, which leaves structural and linguistic blind spots unexamined. To close that gap, the framework operates in two stages. First, its mutation modules — **Join Query Expansion (JQE)** and **Textual Query Augmentation (TQA)** — automatically generate new evaluation queries from an existing benchmark. Second, its **fine-grained metrics layer** evaluates those queries using Execution Precision (EXP), Execution Recall (EXR), and F1 rather than a single binary score. Applied to three state-of-the-art systems — CHESS, DIN-SQL, and MAC-SQL — SQLMorph exposed accuracy degradation as join complexity grows and revealed up to a 17% accuracy drop when natural language queries use heavy abbreviations.
+
+## The data foundation: BIRD benchmark
+
+SQLMorph is built around the [BIRD benchmark](https://bird-bench.github.io/), a large-scale Text-to-SQL dataset that covers real-world enterprise schemas. Each entry in the BIRD development set provides:
+
+- A **natural language (NL) question** from a user
+- A **ground-truth SQL query** that answers it
+- A **database schema** defining tables, columns, and foreign-key relationships
+
+SQLMorph takes these entries as its starting point and generates expanded evaluation sets without requiring manual annotation.
+
+## How data flows through SQLMorph
+
+Every evaluation in SQLMorph follows a three-step pipeline:
+
+<Steps>
+  <Step title="Input: NL query, SQL, and schema">
+    A BIRD benchmark entry enters the system as a triple: the NL question a user would ask, the gold-standard SQL that answers it, and the schema graph of the target database. This triple is the unit of mutation for both JQE and TQA.
+  </Step>
+  <Step title="Mutation: JQE or TQA generates expanded queries">
+    **JQE** extends the SQL component. It analyses the database schema as a graph using NetworkX, identifies tables not yet in the original query, and constructs new queries that add those tables via valid joins. The result is a set of structurally more complex SQL queries paired with LLM-generated NL questions.
+
+    **TQA** extends the NL component. It renames schema elements (tables and columns) using a controlled obfuscation mapping, then prompts GPT-4o to rewrite the original NL question so it reflects the renamed schema. The result is a set of linguistically degraded queries that share the same SQL ground truth.
+
+    Both modules produce two output buckets: **filtered** queries (structurally unique, kept for evaluation) and **discarded** queries (isomorphic duplicates, excluded).
+  </Step>
+  <Step title="Evaluation: fine-grained metrics">
+    A Text-to-SQL system generates a predicted SQL for each expanded query. SQLMorph executes both the predicted SQL and the ground-truth SQL against the live database, then computes EX, EXP, EXR, and F1 across seven configurable evaluation techniques — ranging from exact cell matching to semantic embedding-based comparison.
+  </Step>
+</Steps>
+
+## What the SOTA experiments showed
+
+When CHESS, DIN-SQL, and MAC-SQL were evaluated on JQE-generated queries, all three systems showed measurable accuracy degradation as the number of joins in the expanded queries increased — a weakness invisible to standard benchmark scores. TQA experiments revealed that even moderate linguistic changes, such as replacing readable column names with terse abbreviations, caused up to a 17% drop in execution accuracy. These findings demonstrate that SQLMorph's targeted choke points surface failure modes that binary metrics and static benchmarks cannot.
+
+## Explore the three core modules
+
+<CardGroup cols={2}>
+  <Card title="Join Query Expansion" icon="diagram-project" href="/concepts/join-query-expansion">
+    Learn how JQE uses graph analysis and isomorphism checks to generate structurally diverse SQL queries.
+  </Card>
+  <Card title="Textual Query Augmentation" icon="pen-nib" href="/concepts/textual-query-augmentation">
+    Understand how TQA applies schema renaming and LLM prompting to create linguistically challenging queries.
+  </Card>
+  <Card title="Fine-grained metrics" icon="chart-bar" href="/concepts/metrics">
+    Explore the EXP, EXR, and F1 metrics and the seven evaluation techniques that power them.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first JQE expansion or metrics evaluation in a few commands.
+  </Card>
+</CardGroup>

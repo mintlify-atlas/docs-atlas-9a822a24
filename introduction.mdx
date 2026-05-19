@@ -1,0 +1,51 @@
+---
+title: "SQLMorph: Query Mutation for Text-to-SQL Evaluation"
+description: "Learn how SQLMorph uses join expansion and textual augmentation to build richer evaluation sets and expose weaknesses that binary metrics like EX cannot detect."
+---
+
+Text-to-SQL systems have improved rapidly with large language models, yet the standard way to measure them has not kept pace. Execution Accuracy (EX) treats every prediction as either fully correct or fully wrong, masking partial errors and hiding systematic model weaknesses. At the same time, building private evaluation sets that reflect real enterprise schemas is expensive, time-consuming, and hard to reproduce. SQLMorph — a research framework accepted at ICDE 2026 — addresses both problems at once: it generates targeted evaluation data automatically through query mutation, and it provides fine-grained execution metrics that reveal what binary accuracy obscures.
+
+## What SQLMorph does
+
+SQLMorph combines two complementary mutation techniques with a family of relaxed evaluation metrics.
+
+**Join Query Expansion (JQE)** takes existing SQL queries and systematically adds semantically valid joins, producing a spectrum of queries that range from simple single-table lookups to complex multi-join statements. This creates a controlled stress test for how systems handle increasing structural complexity. Applied to state-of-the-art systems evaluated on the BIRD benchmark, JQE exposes a consistent pattern: accuracy degrades as the number of joins grows.
+
+**Textual Query Augmentation (TQA)** generates controlled natural language perturbations of existing questions — paraphrases, abbreviations, formal restatements — without changing the intended SQL answer. These perturbations probe how sensitive a system is to linguistic surface variation. Experiments show that moderate variation causes measurable degradation, and forcing heavy abbreviations results in up to a 17% drop in accuracy across evaluated systems.
+
+## Fine-grained metrics
+
+Beyond evaluation set generation, SQLMorph defines three execution-level metrics that go beyond binary EX:
+
+- **Execution Precision (EXP)** — of the rows the predicted query returned, what fraction are correct?
+- **Execution Recall (EXR)** — of the rows the ground-truth query returns, what fraction did the prediction recover?
+- **F1** — the harmonic mean of EXP and EXR, giving a single unified score.
+
+These metrics separate over-prediction (a query that returns too many rows scores low on EXP) from under-prediction (a query that misses rows scores low on EXR), revealing differences between systems that binary EX treats as identical.
+
+## Systems and benchmarks
+
+SQLMorph's experiments target the [BIRD benchmark](https://bird-bench.github.io/), a large-scale Text-to-SQL dataset covering diverse real-world databases. The framework has been applied to three state-of-the-art systems:
+
+- **CHESS** — a pipeline-based system using schema linking and candidate generation
+- **DIN-SQL** — a decomposition-based approach using in-context learning
+- **MAC-SQL** — a multi-agent framework for complex schema navigation
+
+Across all three, SQLMorph's mutation techniques and fine-grained metrics surface accuracy patterns that standard evaluation would not reveal.
+
+## Explore the framework
+
+<CardGroup cols={2}>
+  <Card title="Join Query Expansion" icon="diagram-project" href="/concepts/join-query-expansion">
+    How JQE adds semantically valid joins to increase structural complexity and probe model limits.
+  </Card>
+  <Card title="Textual Query Augmentation" icon="pen-nib" href="/concepts/textual-query-augmentation">
+    How TQA perturbs natural language questions to measure robustness to linguistic variation.
+  </Card>
+  <Card title="Fine-grained metrics" icon="chart-bar" href="/concepts/metrics">
+    The definitions and behavior of EXP, EXR, and F1 versus binary Execution Accuracy.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install SQLMorph and run your first evaluation in under five minutes.
+  </Card>
+</CardGroup>

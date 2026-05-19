@@ -1,0 +1,185 @@
+---
+title: "Join Query Expansion API reference"
+description: "Python API and CLI reference for aug_n_table_sql_queries, find_candidate_expansions, and the join query expansion output file structure."
+---
+
+The Join Query Expansion (JQE) module generates new SQL queries by extending existing join-query graphs from the BIRD benchmark. Given a database ID and a target table count, it locates candidate tables adjacent to known query graphs, combines them into extended subgraphs, executes the resulting SQL against the live SQLite database to verify correctness, and partitions the output into filtered (novel) and discarded (isomorphic) query sets. You can drive the module either from Python or from the command line.
+
+## Python API
+
+### `aug_n_table_sql_queries()`
+
+The primary entry point for programmatic use. Loads subgraphs and the schema graph for the given database, generates extended SQL queries, and returns three collections.
+
+```python
+from src.join_query_expansion.sql_query_gen import aug_n_table_sql_queries
+
+filtered_aug, discarded_aug, all_extensions = aug_n_table_sql_queries(
+    db_id="financial",
+    num_tables=3,
+    graph_first=False,
+    max_queries=1000,
+    max_isomorphic=5,
+    sort_asc=True,
+)
+```
+
+**Parameters**
+
+<ParamField path="db_id" type="string" required>
+  The BIRD benchmark database identifier (e.g., `"financial"`, `"formula_1"`). The function resolves all required paths — the SQLite file, schema graph pickle, and rule-inputs directory — using this value together with the `RULE_INPUTS_BASE`, `GRAPH_DATA_BASE`, and `DATA_FOLDER` environment variables.
+</ParamField>
+
+<ParamField path="num_tables" type="integer" required>
+  Number of tables that the augmented queries must involve. This controls which pre-augmented subgraphs are loaded from the rule-inputs directory; only subgraphs of exactly `num_tables` nodes are used as seeds.
+</ParamField>
+
+<ParamField path="graph_first" type="boolean" default="False">
+  When `True`, each extended subgraph is also translated into a canonical SQL query by traversing the graph structure directly (graph-first mode), in addition to the query-first extension. Graph-first queries are stored in the `graph_first` key of the returned dicts and require additional LLM calls to produce natural-language questions and evidence.
+</ParamField>
+
+<ParamField path="max_queries" type="integer" default="1000">
+  Maximum total number of valid extended queries to generate before stopping. The generator iterates over seed graphs and candidate combinations in order and stops as soon as this limit is reached.
+</ParamField>
+
+<ParamField path="max_isomorphic" type="integer" default="5">
+  Maximum number of structurally isomorphic query graphs to keep in the filtered set. Once `max_isomorphic` copies of a given graph pattern exist in the filtered output, further isomorphic extensions are moved to the discarded set. The source default differs from the CLI default (see below).
+</ParamField>
+
+<ParamField path="sort_asc" type="boolean" default="True">
+  Sort candidate tables in ascending order based on their number of rows before enumerating expansions. When `False`, the default ordering is used. The Python function default is `True`; the CLI default is `False`.
+</ParamField>
+
+**Return value**
+
+Returns a 3-tuple: `(filtered_aug, discarded_aug, all_extensions)`.
+
+<ResponseField name="filtered_aug" type="dict">
+  Queries that passed the isomorphism filter and were accepted into the augmented set.
+  <Expandable title="keys">
+    <ResponseField name="db_id" type="string">
+      The database identifier passed in.
+    </ResponseField>
+    <ResponseField name="queries" type="list[dict]">
+      Query-first entries. Each dict contains `id`, `ext_id`, `evidence`, `difficulty`, and `SQL`.
+    </ResponseField>
+    <ResponseField name="graph_first" type="list[dict]">
+      Graph-first entries (populated only when `graph_first=True`). Each dict contains `id`, `SQL`, and `difficulty`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="discarded_aug" type="dict">
+  Queries that were rejected because the extended graph was isomorphic to an existing one and the `max_isomorphic` cap was already met. Same structure as `filtered_aug`.
+</ResponseField>
+
+<ResponseField name="all_extensions" type="list[dict]">
+  Detailed log of every accepted extension attempt (only populated when `graph_first=True`). Each entry carries the original and extended query fields plus a `status` key of either `"filtered"` or `"discarded"`.
+</ResponseField>
+
+---
+
+### `find_candidate_expansions()`
+
+A lower-level helper used internally by the generator loop. Given the full schema graph and a single join-query subgraph, it finds every table in the schema that is not yet in the subgraph but is connected to at least one table that is, then enumerates all valid edge/join-key combinations for each candidate.
+
+```python
+from src.join_query_expansion.sql_query_gen import find_candidate_expansions
+
+combinations = find_candidate_expansions(
+    schema_graph=schema,   # networkx.Graph loaded from the schema pickle
+    jq_graph=jq_graph,     # networkx.DiGraph representing the seed query
+    sort_asc=False,
+)
+```
+
+<ParamField path="schema_graph" type="networkx.Graph" required>
+  The full schema graph for the database, loaded from `{GRAPH_DATA_BASE}/{db_id}_graph.pkl`. Nodes are table names; edges carry join-condition labels.
+</ParamField>
+
+<ParamField path="jq_graph" type="networkx.DiGraph" required>
+  The join-query graph representing the seed SQL query. Nodes are `(table_name, alias)` tuples.
+</ParamField>
+
+<ParamField path="sort_asc" type="boolean" default="False">
+  Passed through to `sort_condition_combinations()` to control the ordering of the returned list.
+</ParamField>
+
+Returns a list of combination dicts. Each dict has a `candidate_table` key (a `(table_name, alias)` tuple) and a `candidate_edges` key (a list of edge dicts, each with an `edge` and a `joins` list of join-condition strings). Returns an empty list when no adjacent candidates exist.
+
+---
+
+## Command-line interface
+
+Run the full pipeline — SQL generation followed by natural-language question generation — directly from the shell.
+
+```bash
+python -m src/join_query_expansion/main.py <db_id> <num_tables> [options]
+```
+
+**Positional arguments**
+
+| Argument | Type | Description |
+|---|---|---|
+| `db_id` | string | Database identifier (e.g., `financial`) |
+| `num_tables` | integer | Number of tables in the augmented queries |
+
+**Options**
+
+| Flag | Long form | Type | Default | Description |
+|---|---|---|---|---|
+| `-max` | `--max_queries` | int | `1000` | Maximum number of extended queries to generate |
+| `-iso` | `--max_isomorphic` | int | `1` | Maximum isomorphic queries per graph pattern |
+| `-asc` | `--sort_asc` | bool | `False` | Sort candidate tables ascending by row count |
+| `-g` | `--graph_first` | bool | `False` | Enable graph-first augmentation mode |
+
+<Note>
+The CLI default for `--max_isomorphic` is `1`, whereas the Python function default is `5`. Pass `-iso` explicitly if you want consistent behaviour between the two interfaces.
+</Note>
+
+Boolean flags accept `true`/`false`, `yes`/`no`, `t`/`f`, `y`/`n`, and `1`/`0`.
+
+**Example**
+
+```bash
+python -m src/join_query_expansion/main.py financial 3 \
+  --max_queries 500 \
+  --max_isomorphic 2 \
+  --sort_asc true \
+  --graph_first false
+```
+
+---
+
+## Output file structure
+
+Persistence functions write results under `$RULE_OUTPUTS_BASE` using a `{status}/{mode}/` subdirectory layout.
+
+<Tree>
+  <Tree.Folder name="$RULE_OUTPUTS_BASE" defaultOpen>
+    <Tree.Folder name="{status}" defaultOpen>
+      <Tree.Folder name="{mode}" defaultOpen>
+        <Tree.File name="{output_file}_ori.json" />
+        <Tree.File name="{output_file}_aug.json" />
+        <Tree.File name="{output_file}.sql" />
+      </Tree.Folder>
+    </Tree.Folder>
+    <Tree.Folder name="aug_log">
+      <Tree.File name="augmentation_log.pickle" />
+    </Tree.Folder>
+  </Tree.Folder>
+</Tree>
+
+| File | Contents |
+|---|---|
+| `*_ori.json` | Original BIRD benchmark entries that the augmented queries were extended from |
+| `*_aug.json` | Augmented query entries with `question_id`, `db_id`, `question`, `evidence`, `SQL`, and `difficulty` |
+| `*.sql` | One SQL query per line followed by a tab and the `db_id` |
+| `augmentation_log.pickle` | Cumulative pickle log of all extension attempts across runs (populated in graph-first mode) |
+
+For graph-first output, `save_graph_first()` writes two JSON files per output:
+
+| File | Contents |
+|---|---|
+| `*_exp.json` | Explicit questions generated directly from the SQL structure |
+| `*_dev.json` | Dev-set-like questions with natural-language evidence |

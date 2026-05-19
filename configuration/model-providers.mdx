@@ -1,0 +1,242 @@
+---
+title: "Configuring LLM and embedding model providers"
+description: "Set up OpenAI, Ollama, or HuggingFace models for NL query generation in JQE and TQA pipelines, and for semantic evaluation metrics."
+---
+
+SQLMorph uses large language models in two distinct roles: completion models generate natural-language query variants in the JQE and TQA pipelines, and embedding models power the semantic evaluation metrics that compare column names by meaning rather than exact string match. All providers are accessed through a single `ModelManager.create_model()` factory that accepts a `ModelProvider` enum, a `ModelType` enum, and a provider-specific model name enum. This page shows how to configure each supported provider.
+
+## ModelManager factory
+
+```python
+from src.core.model_manager import ModelManager, ModelProvider, ModelType
+from src.core.model_manager.openai_model import OpenAIModel
+import os
+
+model = ModelManager.create_model(
+    model_provider=ModelProvider.OPENAI,
+    model_type=ModelType.COMPLETION,
+    model_name=OpenAIModel.GPT_4O,
+    openai_api_key=os.getenv("OPENAI_API_KEY"),
+)
+```
+
+`create_model()` returns an instance of the appropriate class (`OpenAIChatCompletion`, `OllamaChatCompletion`, `HuggingFaceChatCompletion`, or their embedding counterparts). All completion instances expose `get_chat_completion(messages)` and all embedding instances expose `get_embedding(input_data)`.
+
+<ParamField path="model_provider" type="ModelProvider" required>
+  Selects the backend. One of `ModelProvider.OPENAI`, `ModelProvider.OLLAMA`, or `ModelProvider.HUGGINGFACE`.
+</ParamField>
+
+<ParamField path="model_type" type="ModelType" required>
+  `ModelType.COMPLETION` for chat/instruction models; `ModelType.EMBEDDING` for embedding models.
+</ParamField>
+
+<ParamField path="model_name" type="OpenAIModel | OllamaModel | HuggingFaceModel" required>
+  A provider-specific enum value identifying the model. Must match the chosen `model_provider`.
+</ParamField>
+
+<ParamField path="openai_api_key" type="string">
+  Your OpenAI API key. Required when `model_provider` is `ModelProvider.OPENAI`. Pass `os.getenv("OPENAI_API_KEY")` after sourcing `scripts/load_dotenv.sh`.
+</ParamField>
+
+<ParamField path="portkey_api_key" type="string">
+  Optional [Portkey](https://portkey.ai) gateway API key. When set, all OpenAI requests are routed through the Portkey gateway for observability and caching.
+</ParamField>
+
+<ParamField path="portkey_config_id" type="string">
+  Optional Portkey config ID for advanced routing and fallback rules. Used together with `portkey_api_key`.
+</ParamField>
+
+## Provider configuration
+
+<Tabs>
+  <Tab title="OpenAI">
+    Set `OPENAI_API_KEY` in your `.env` file and source it before running experiments:
+
+    ```bash
+    source scripts/load_dotenv.sh
+    ```
+
+    **Completion models**
+
+    ```python
+    from src.core.model_manager import ModelManager, ModelProvider, ModelType
+    from src.core.model_manager.openai_model import OpenAIModel
+    import os
+
+    llm = ModelManager.create_model(
+        model_provider=ModelProvider.OPENAI,
+        model_type=ModelType.COMPLETION,
+        model_name=OpenAIModel.GPT_4O,
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+    )
+
+    response = llm.get_chat_completion(
+        messages=[{"role": "user", "content": "Generate a SQL query for..."}]
+    )
+    ```
+
+    **Embedding models**
+
+    ```python
+    from src.core.model_manager import ModelManager, ModelProvider, ModelType
+    from src.core.model_manager.openai_model import OpenAIModel
+    import os
+
+    embedder = ModelManager.create_model(
+        model_provider=ModelProvider.OPENAI,
+        model_type=ModelType.EMBEDDING,
+        model_name=OpenAIModel.TEXT_EMBEDDING_3_SMALL,
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+    )
+
+    vector = embedder.get_embedding("california_schools")
+    ```
+
+    **Available OpenAI models**
+
+    | Enum value | Model string | Type |
+    |------------|-------------|------|
+    | `OpenAIModel.GPT_52` | `gpt-5.2` | Completion |
+    | `OpenAIModel.O1_PREVIEW` | `o1-preview` | Completion |
+    | `OpenAIModel.O1_MINI` | `o1-mini` | Completion |
+    | `OpenAIModel.GPT_4O` | `gpt-4o` | Completion |
+    | `OpenAIModel.GPT_4O_MINI` | `gpt-4o-mini` | Completion |
+    | `OpenAIModel.GPT_4_TURBO` | `gpt-4-turbo` | Completion |
+    | `OpenAIModel.GPT_4` | `gpt-4` | Completion |
+    | `OpenAIModel.GPT_3_5_TURBO` | `gpt-3.5-turbo` | Completion |
+    | `OpenAIModel.TEXT_EMBEDDING_3_SMALL` | `text-embedding-3-small` | Embedding |
+    | `OpenAIModel.TEXT_EMBEDDING_3_LARGE` | `text-embedding-3-large` | Embedding |
+    | `OpenAIModel.TEXT_EMBEDDING_ADA_002` | `text-embedding-ada-002` | Embedding |
+
+    <Note>
+      GPT-4o (`OpenAIModel.GPT_4O`) is the default model for JQE NL query generation. For metrics, set `EMBEDDING_MODEL` in `scripts/metrics_config.sh` to one of `TEXT_EMBEDDING_3_SMALL`, `TEXT_EMBEDDING_3_LARGE`, or `TEXT_EMBEDDING_ADA_002`.
+    </Note>
+  </Tab>
+  <Tab title="Ollama">
+    Ollama runs models locally. Install Ollama and pull the model you want before using it.
+
+    ```bash
+    # Install Ollama: https://ollama.com
+    ollama pull llama3.1:8b
+    ollama pull nomic-embed-text:latest
+    ```
+
+    No API key is required. `create_model()` connects to the Ollama daemon running on `localhost`.
+
+    **Completion models**
+
+    ```python
+    from src.core.model_manager import ModelManager, ModelProvider, ModelType
+    from src.core.model_manager.ollama_model import OllamaModel
+
+    llm = ModelManager.create_model(
+        model_provider=ModelProvider.OLLAMA,
+        model_type=ModelType.COMPLETION,
+        model_name=OllamaModel.LLAM3_1_8B,
+    )
+
+    response = llm.get_chat_completion(
+        messages=[{"role": "user", "content": "Generate a SQL query for..."}]
+    )
+    ```
+
+    **Embedding models**
+
+    ```python
+    from src.core.model_manager import ModelManager, ModelProvider, ModelType
+    from src.core.model_manager.ollama_model import OllamaModel
+
+    embedder = ModelManager.create_model(
+        model_provider=ModelProvider.OLLAMA,
+        model_type=ModelType.EMBEDDING,
+        model_name=OllamaModel.NOMIC_EMBED_TEXT_LATEST,
+    )
+
+    vector = embedder.get_embedding("california_schools")
+    ```
+
+    **Available Ollama models**
+
+    | Enum value | Model string | Context window | Type |
+    |------------|-------------|----------------|------|
+    | `OllamaModel.LLAM3_1_8B` | `llama3.1:8b` | 128,256 | Completion |
+    | `OllamaModel.LLAM3_1_8B_INSTRUCT_Q4_0` | `llama3.1:8b-instruct-q4_0` | 128,256 | Completion |
+    | `OllamaModel.LLAM3_1_8B_INSTRUCT_Q8_0` | `llama3.1:8b-instruct-q8_0` | 128,256 | Completion |
+    | `OllamaModel.LLAM3_1_70B` | `llama3.1:70b` | 128,256 | Completion |
+    | `OllamaModel.MISTRAL_7B` | `mistral:7b` | — | Completion |
+    | `OllamaModel.NOMIC_EMBED_TEXT_LATEST` | `nomic-embed-text:latest` | — | Embedding |
+    | `OllamaModel.NOMIC_EMBED_TEXT_V1_5` | `nomic-embed-text:v1.5` | — | Embedding |
+    | `OllamaModel.MXBAI_EMBED_LARGE_LATEST` | `mxbai-embed-large:latest` | — | Embedding |
+    | `OllamaModel.MXBAI_EMBED_LARGE_335M` | `mxbai-embed-large:335m` | — | Embedding |
+
+    <Warning>
+      Semantic evaluation metrics (`semantic_column_and_exact_cell`, etc.) currently only support OpenAI embedding models. Ollama embeddings are available for custom pipelines but are not wired into the metrics runner.
+    </Warning>
+  </Tab>
+  <Tab title="HuggingFace">
+    HuggingFace models run locally using the `transformers` library. Models are downloaded from the Hub on first use and cached in your local HuggingFace cache directory.
+
+    No API key is required for public models.
+
+    **Completion models**
+
+    ```python
+    from src.core.model_manager import ModelManager, ModelProvider, ModelType
+    from src.core.model_manager.huggingface_model import HuggingFaceModel
+
+    llm = ModelManager.create_model(
+        model_provider=ModelProvider.HUGGINGFACE,
+        model_type=ModelType.COMPLETION,
+        model_name=HuggingFaceModel.QWEN_INSTRUCT,
+    )
+
+    response = llm.get_chat_completion(
+        messages=[{"role": "user", "content": "Generate a SQL query for..."}],
+        max_length=256,
+        temperature=0.7,
+    )
+    ```
+
+    **Embedding models**
+
+    ```python
+    from src.core.model_manager import ModelManager, ModelProvider, ModelType
+    from src.core.model_manager.huggingface_model import HuggingFaceModel
+
+    embedder = ModelManager.create_model(
+        model_provider=ModelProvider.HUGGINGFACE,
+        model_type=ModelType.EMBEDDING,
+        model_name=HuggingFaceModel.BERT_BASE,
+    )
+
+    vectors = embedder.get_embedding("california_schools")
+    ```
+
+    **Available HuggingFace models**
+
+    | Enum value | Model string | Type |
+    |------------|-------------|------|
+    | `HuggingFaceModel.GPT2` | `gpt2` | Completion |
+    | `HuggingFaceModel.QWEN_INSTRUCT` | `qwen-instruct` | Completion |
+    | `HuggingFaceModel.BERT_BASE` | `bert-base-uncased` | Embedding |
+    | `HuggingFaceModel.ROBERTA_BASE` | `roberta-base` | Embedding |
+
+    <Tip>
+      `HuggingFaceEmbeddings.get_embedding()` accepts a single string or a list of strings and uses the `transformers` feature-extraction pipeline internally.
+    </Tip>
+
+    <Warning>
+      Semantic evaluation metrics currently only support OpenAI embedding models. HuggingFace embeddings are available for custom pipelines but are not integrated into the metrics runner.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Choosing a provider
+
+| Use case | Recommended provider | Notes |
+|----------|---------------------|-------|
+| JQE NL query generation | OpenAI (`GPT_4O`) | Default in the JQE pipeline. |
+| TQA NL query generation | OpenAI (`GPT_4O`) | Requires `OPENAI_API_KEY`. |
+| Semantic evaluation metrics | OpenAI (embedding models) | Only OpenAI embeddings are currently supported for metrics. Configure via `EMBEDDING_MODEL` in `scripts/metrics_config.sh`. |
+| Local / offline experiments | Ollama | No API key required; requires the Ollama daemon. |
+| Custom research pipelines | HuggingFace | Full control over model weights; downloads from HuggingFace Hub. |
